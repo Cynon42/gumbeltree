@@ -1,0 +1,195 @@
+---
+title: "gumbeltree"
+author: "cynon"
+date: "3/12/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+My first R Markdown file, but trying to illustrate a relatively advanced topic that does not exist in the literature.
+We will attempt to use rebar-concrete, or in other words the Gumbel Softmax function to approximate discrete choices within an HMC using Stan.
+
+I have created an example decision tree as I see it working and we will try to improve thie tree to include implementations of either boosted trees or bayesian additive regression trees as we progress
+
+## basic code
+
+I put the actual stancode below, but first I set up the cmdstanr engine for processinf cmdstanr stancode as it is more up to date at the moment.
+
+```{r}
+install.packages("cmdstanr", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
+library(cmdstanr)
+check_cmdstan_toolchain()
+install_cmdstan(cores = 10,overwrite=TRUE)
+cmdstan_path()
+cmdstan_version()
+
+file <- file.path(cmdstan_path(), "examples", "bernoulli", "bernoulli.stan")
+mod <- cmdstan_model(file)
+
+data_list <- list(N = 10, y = c(0,1,0,0,0,0,0,0,0,1))
+
+# confirming models can run and run in parallel
+fit <- mod$sample(
+  data = data_list,
+  iter_warmup = 1000,
+  iter_sampling = 1e5,
+  seed = 123,
+  chains = 4,
+  parallel_chains = 4,
+  refresh = 500
+)
+```
+
+Now get cmdstan code chunks working.
+
+```{r}
+
+library(knitr)
+
+register_knitr_engine()
+```
+
+
+```{stan output.var="gumbeltree"}
+
+// This stan chunk results in a CmdStanModel object called "gumbeltree"
+
+// here is an attemp to make a regression tree using
+// gumbel softmax
+data {
+  int<lower=0> N;//number of rows or samples
+  int K;// number of features including the extra feature of a column of ones
+  vector[N] y;// the samples of the target function
+  matrix[N,K] X; // the features or design matrix. continuous features normalised to normal(0,1)
+  int L; // number of levels in the tree, order of tree
+  real T; // temperature to run the gumbel softmax approximation of a one-hot
+          // this is a critical hyperparameter that defines how easily the model can traverse between modes, 
+          // or between trees that are a good fit, but are in different parts of parameter space
+}
+transformed data{
+  // need to add column of ones to the design matrix
+  // all binary features incl the column of ones need to be replaced with (-100,100) so that C will never be outside the range
+  // gumbel parameters are k+1 as a result
+  //gumbel softmax used to select a feature, 
+  //or select "no feature" wich is to select the first feature which is always 1
+  // this allows for an option that the node does not split i.e.
+  // always select the left branch
+  // if another feature is selected, then the logistic function is used
+  // to find a cutoff point on that feature with which to branch the node
+  //int constant=2;
+  int NL=1;// number of possible leaves
+  int NW;// number of nodes or weights or choices in the tree
+  
+  for (i in 1:L){
+    NL = NL*2;// can only make integer 2^L inside a loop
+  }
+  
+  NW=NL-1;
+  
+}
+
+// The main problem is referring to the tree
+
+parameters {
+  real<lower=0> sigma;// assume gaussian error in y for a minute
+  vector[K] G[NW];//number of gumbel samples needed to select a feature at each node
+  simplex[K] P[NW];//probability vector indicating the probability of selecting each feature at each node, each group adds to 1 i.e. simplex
+  
+  real C[NW]; //for each feature selected we need a cutoff point
+  real mu[NL];// mean of Y at each leaf
+}
+model {
+  real F[N]; //the estimation of Y given X i.e. y^=F(X)
+  real w[NW]; //calculation of the weight for each node for each sample
+  real temp[NL]; //temporary store of tree calculations
+  int c;// local integer parameter
+  int c2;// local integer parameter
+  for (i in 1:N){
+    for (j in 1:NW){
+      w[j]=inv_logit(10*(dot_product(softmax( (log(P[j])*(T^2 + T +1) / (T+1) + G[j])/T ),to_vector(X[i])) +C[j]));
+      // selects a parameter using the approximate one-hot dot producted against a specific X[i], adds a cutoff constant and applies a logistic to return (~0,~1)
+      // this is effectively (approximately) choosing which branch of the tree to traverse, based on a cutoff applied to a selected feature
+    }
+    // start at the bottom of the tree and work upwards
+    // at the end of the loop temp[1] is the result of applying the tree to X[i]
+    temp = mu ;
+    for (j in L:1){
+      c=1;
+      for (k in 1:j-1){
+        c = c*2;// can only make integer c = (2^(j-1)) inside a loop
+      }    
+      
+      for (k in 1:c){
+        c2=1;
+        for (l in 1:j){
+          c2 = c2*2;// can only make integer c2 = 2^j inside a loop
+        }
+        temp[k]=w[k+NW-c2+1]*temp[2*k-1]+(1-w[k+NW-c2+1])*temp[2*k]; // cycling through the tree and calculating which leaf is retained based on w
+      }
+    }
+    F[i]=temp[1];
+  }
+  y ~ normal(F, sigma);// assuming that y is a function that ranges (-inf,+inf)
+  for (i in 1:NW){
+    G[i]~gumbel(0,1); // each vector of gumbels used to create a one-hot
+  }
+  C~normal(0,1); //features in the design matrix are normalised so the cutoffs should be normalised I suggest
+  //P needs a prior and should have a U shaped simplex prior
+}
+```
+
+now build the model
+```{r}
+file = file.path("gumbeltree.stan")
+mod <- cmdstan_model(file)
+```
+
+
+## Synthetic data
+I am trying to create normalised features for the most part. Categorical features converted to one-hot and normalised to something like (-100,100) so that the shift function C has no effect (as it is also normalised) and the logistic always returns one
+
+```{r }
+library(dplyr)
+# generate some synthetic data
+X = data.frame(x1=rep(100,1000)#column of same high number, this is the feature that does nothing
+               ,x2=rnorm(1000,0,1)#normalised features 2-10
+               ,x3=rnorm(1000,0,1)
+               ,x4=rnorm(1000,0,1)
+               ,x5=rnorm(1000,0,1)
+               ,x6=rnorm(1000,0,1)
+               ,x7=rnorm(1000,0,1)
+               ,x8=rnorm(1000,0,1)
+               ,x9=rnorm(1000,0,1)
+               ,x10=rnorm(1000,0,1))%>%
+  mutate(y = 3*x2+x3+sin(x4)+cos(x5)+x6*x7+0.01*x8)# a function to try to approximate
+```
+
+now try the code with the data
+
+```{r}
+standata = list(
+  N = length(X$y)
+  ,K = length(X[1,])-2
+  ,y = X$y
+  ,X = X%>%select(-1,-y)
+  ,L=4
+  ,T=1
+)
+
+fit <- mod$sample(
+  data = standata,
+  seed = 123,
+  chains = 4,
+  parallel_chains = 4,
+  iter_warmup = 100,
+  iter_sampling = 1000,
+  refresh = 5
+)
+
+```
+
