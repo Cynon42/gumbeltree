@@ -547,6 +547,8 @@ fit2 <- gumbeltree$sample(
   adapt_delta = 0.99,
   refresh = 10
 )
+stanfit <- rstan::read_stan_csv(fit2$output_files())
+save(fit2,stanfit, file = "fit2_stanfit.RData")
 
 ```
 
@@ -563,7 +565,9 @@ launch_shinystan(stanfit)
 
 assuming models have gone well, we should just check out the math a bit to see that it works as intended.
 
-first lets sample some Gumbel distributions.
+first lets sample some Gumbel distributions. an interesting reference might be:
+https://github.com/howardnewyork/rebar/blob/master/rebar_1.stan
+
 
 ```{r}
 # gumbel samples for 10 dimensional one-hot
@@ -624,7 +628,7 @@ one_hot%>%plot_ly(x=~OH, type="histogram",color=~dimension,bingroup=1)%>%
 nope. I will transform OH to an integer first then
 
 ```{r}
- one_hot %>% mutate(OH = (OH*10)%/%1) %>%filter(dimension %in% c(1,10))%>% plot_ly(x=~OH, type="histogram",color=~dimension,bingroup=1)%>%
+ one_hot %>% mutate(OH = (OH*10)%/%1) %>%filter(dimension %in% c(1,10))%>% plot_ly(x=~OH, type="histogram",color=~dimension)%>%
   layout(
   barmode="stack",
   bargap=0.1,yaxis = list(range = c(0, 1000)))
@@ -632,3 +636,6 @@ nope. I will transform OH to an integer first then
 ```
 
 looks good. So back to residual plotting.
+
+## Calculating Residuals
+first need to extract the 
