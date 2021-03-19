@@ -1,11 +1,11 @@
 .Rproj.user/
-
 .Rhistory
 .RData
-
 *.html
 *.dot
 *.png
-
 *_cache
 *_files
+gumbeltree2.exe
+gumbeltree_reduce.exe
+gumbeltree_reduce_threads.exe
