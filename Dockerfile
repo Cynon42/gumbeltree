@@ -1,4 +1,4 @@
-FROM kaybenleroll/r_baseimage:base202012
+FROM rocker/tidyverse:4.0.4
 # ubuntu and r package install command
 RUN apt-get update \
   && apt-get upgrade -y \
@@ -22,5 +22,10 @@ RUN apt-get update \
     sf \
     sp \
     sweep \
-    xts
+    xts 
+RUN r -e "options(download.file.method = 'wininet') ; devtools::install_github('paul-buerkner/brms',dependencies = TRUE)" 
+RUN r -e "install.packages('cmdstanr', repos = c('https://mc-stan.org/r-packages/', getOption('repos')))"
+RUN r -e "cmdstanr::install_cmdstan(cores = 10,overwrite=TRUE)"
+  
+
 
