@@ -21,6 +21,10 @@ I have created an example decision tree as I see it working and we will try to i
 I put the actual stancode below, but first I set up the cmdstanr engine for processinf cmdstanr stancode as it is more up to date at the moment.
 
 ```{r}
+```{r, eval = FALSE}
+
+# this code chunk is made redundant by the installation of the github versions on BRMS and cmdstanr into the docker image.
+# see the "Dockerfile"
 install.packages("cmdstanr", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
 library(cmdstanr)
 check_cmdstan_toolchain()
@@ -49,6 +53,7 @@ Now get cmdstan code chunks working.
 
 ```{r}
 
+library(cmdstanr)
 library(knitr)
 
 register_knitr_engine()
@@ -56,6 +61,7 @@ register_knitr_engine()
 
 
 ```{stan output.var="gumbeltree"}
+```{stan output.var="gumbeltree", eval = FALSE}
 
 // This stan chunk results in a CmdStanModel object called "gumbeltree"
 
@@ -651,7 +657,15 @@ doesn't work. I can try a different draws function, which would take a few minut
 
 I will provide the BRMS implementation prototype here for completeness, but I think it will be more useful in future when the tree families can be used in conjunction with other families in the same model e.g. a tree for data infilling, and then a non-linear GAM for frequency/severity models. This capability would be invaluable as the BRMS ability to create stancode for several prototype models relatively quickly is the best method in my opinion.
 
+<<<<<<< HEAD
 ```{r}
+=======
+first we would normally need to install development versions of the cmdstanr and BRMS packages. This is already incorporated into the dockerfile.
+
+```{r, eval = FALSE}
+# this contains redundant lines that may be needed in various cases. Approach varies with OS and environment.
+
+>>>>>>> 3a692c966b6c1af988e729d6b4a280c10e7edaac
 #library(devtools)
 #remove.packages(c("StanHeaders", "rstan"))
 ##install_github("hsbadr/rstan/StanHeaders@develop")
@@ -661,6 +675,13 @@ I will provide the BRMS implementation prototype here for completeness, but I th
 ##install_github("hsbadr/rstan/rstan/rstan@develop")
 #install.packages("rstan", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
 #install_github("paul-buerkner/brms",dependencies = TRUE)
+<<<<<<< HEAD
+=======
+
+```
+
+```{r}
+>>>>>>> 3a692c966b6c1af988e729d6b4a280c10e7edaac
 library(brms)
 gumbeltree <- custom_family(
   "gumbeltree", dpars = c("mu"), # actually mu is really the sigma for the tree, but the first parameter has to be called sigma,  
