@@ -284,11 +284,11 @@ stanvars_gumbeltree <- stanvar(scode = stan_funs_part_sum, block = "functions")+
 
 ### compile stancode
 
-now that I have the componentry to perform a BRMS setup with the model. lets call BRMS and ask for the code to see it works.
+now that I have the componentry to perform a BRMS setup with the model. lets call BRMS and ask for the code to see it looks right to a superficial check. This is a debugging step where I modify the code above until the stancode looks right.
 
 ```{r}
  formula = bf(y ~  1)
- 
+ options("cmdstanr_verbose"=FALSE)
  stancode =make_stancode(formula
                                #, family = gumbeltree # needed if you want to do something else with the data as well as the tree
                                , stanvars = stanvars_gumbeltree
@@ -311,7 +311,7 @@ stancode # type out the stancode for bug checking before we try to run it
 ```
 
 
-Now that we have created BRMS compatible stancode. Lets try to compile it
+Now that we have created BRMS compatible stancode. Lets try to compile it. This is the next debugging step. We modify the stancode further to get rid of the final issues in the code such that it compiles and runs without error.
 
 ```{r}
 
@@ -335,15 +335,15 @@ Now that we have created BRMS compatible stancode. Lets try to compile it
 
 ```
 
-Readers may note that the BRMS package has effectively been used like a trojan horse to run this code. This shows how much control there is over the BRMS package behaviour if you know how stancode works.
+Readers may note that the BRMS package has effectively been used like a trojan horse to run this code. This shows how much control there is over the BRMS package behaviour if you know how stancode works. A real testament to the work Paul Buerkner and his team has put into the development.
 
 The test has worked so we may now run a longer model that may be amenable to further residuals analysis.
 
 ```{r}
 BRMS_example =brm(formula
                   , stanvars = stanvars_gumbeltree
-                  ,data = data.frame(y=c(1,2)) 
-                  ,backend = "cmdstanr"
+                  ,data = data.frame(y=1) 
+                  #,backend = "cmdstanr"
                   ,threads = threading(20)
                   ,cores = 20
                   ,iter = 200
@@ -357,4 +357,555 @@ BRMS_example =brm(formula
                   ,prior = priors
 ) 
 
+save(BRMS_example, file = "BRMS_example.RData")
+```
+11 hours completion time isn't great, but the model seemed to work ok. Lets have a look with Shinystan. A bit easier now that the model is in BRMS.
+
+```{r}
+library(shinystan)
+launch_shinystan(BRMS_example)
+
+```
+What is evident from ShinyStan is that there is multimodality in the answers and the given means at each leaf. As a result, we need do one of three things:
+- simplify the model to understand the outputs better and it runs faster
+- Look at the residuals against the sampled data to see if the model is doing any good
+- Extract some of the trees to see if they are making decisions in the way we think.
+
+We will start with residuals as this was why we used BRMS in the first place.
+
+As an afterthought. I think I will further modify BRMS to include a new family like I was originally planning
+```{r}
+
+library(brms)
+gumbeltree <- custom_family(
+  "gumbeltree", dpars = c("mu"), # actually mu is really the sigma for the tree, but the first parameter has to be called sigma,  
+                                  # and this is the only parameter that BRMS will be handling
+  links = c("log"),
+
+  type = "real",
+  vars = c("y_T","X_T","H","C","mu_T","K_T","L_T","NW","NL","T_T","grainsize_T") # the additional parameters to run the tree
+  #vars = c("grainsize_T")
+)
+
+stan_funs_gumbeltree <- "
+real partial_sum(real[,] xy_slice,
+                   int start,
+                   int end,
+                   matrix H,
+                   vector C,
+                   vector mu,
+                   real sigma,
+                   int K,
+                   int L,
+                   int NW,
+                   int NL,
+                   real T) {
+
+  real y[end-start+1] = to_array_1d(xy_slice[,1]);
+  matrix[end-start+1 , K] X = to_matrix(xy_slice[,2:(K+1)]);
+  matrix[NW,end-start+1] w; //calculation of the weight for each node for each sample
+  matrix[NL,end-start+1] temp; //temporary store of tree calculations
+                      // after processing, the first row of temp becomes
+                      //the estimation of Y given X i.e. y^=F(X)
+  int c;// local integer parameter
+  int c2;// local integer parameter
+
+  // this is effectively (approximately) choosing which branch of the tree to traverse, based on a cutoff applied to a selected feature
+  w=inv_logit(10*((H*X')+rep_matrix(C,end-start+1)));
+
+  // start at the bottom of the tree and work upwards
+  // at the end of the loop temp[1] is the result of applying the tree to X[i]
+  temp = rep_matrix(mu,end-start+1) ;
+  for (j in L:1){
+   c=1;
+   for (k in 1:(j-1)){
+     c = c*2;// can only make integer c = (2^(j-1)) inside a loop
+   }
+
+   for (k in 1:c){
+     c2=1;
+     for (l in 1:j){
+       c2 = c2*2;// can only make integer c2 = 2^j inside a loop
+     }
+     temp[k]=w[k+NW-c2+1] .* temp[2*k-1] + (1-w[k+NW-c2+1]) .* temp[2*k]; // cycling through the tree and calculating which leaf is retained based on w
+   }
+  }
+
+    return normal_lpdf(y | temp[1]', sigma);// assuming that y is a function that ranges (-inf,+inf)
+  }
+
+
+  real gumbeltree_lpdf(real dummy_sample // at the moment there is no data that BRMS is handling
+                  , real sigma
+                  , vector y
+                  , matrix X
+                  , matrix H
+                  , vector C
+                  , vector mu
+                  , int K
+                  , int L
+                  , int NW
+                  , int NL
+                  , real T
+                  , int grainsize) {
+  // we use this function when the reduce sum is our target. This may not be easy right now with BRMS
+  real F;
+  F  = reduce_sum(partial_sum,
+                       to_array_2d(append_col(y,X)),
+                       grainsize,
+                       H,
+                       C,
+                       mu,
+                       sigma,
+                       K,
+                       L,
+                       NW,
+                       NL,
+                       T);
+  return F;  
+  }
+
+"
+stanvars_trf_data = " 
+  NL=1;
+  for (i in 1:L_T){
+    NL = NL*2;// can only make integer 2^L inside a loop
+  }
+  NW=NL-1;
+"
+stanvars_par = "
+  vector[K_T] G[NW];//number of gumbel samples needed to select a feature at each node
+  simplex[K_T] P[NW];//probability vector indicating the probability of selecting each feature at each node, each group adds to 1 i.e. simplex
+
+"
+
+ stanvars_trf_p = "
+ for (j in 1:NW){
+      H[j] = softmax( (log(P[j])*(T_T^2 + T_T +1) / (T_T+1) + G[j])/T_T)' ;
+      // selects a parameter using the approximate one-hot dot producted against a specific X[i], adds a cutoff constant and applies a logistic to return (~0,~1)
+  }
+ "
+
+# we will use the suffix _T to denote parameters for the tree function to avoid accidentally conflicting a parameter with BRMS
+# we are essentially shoehorning our own code into BRMS by force, rendering the main part of the model irrelevant at this stage.
+# At a later stage, we can envisage BRMS code running a different model as well. e.g a GLM with the tree function providing estimates of the missing variables
+stanvars_gumbeltree <- stanvar(scode = stan_funs_gumbeltree, block = "functions")+
+                           stanvar(pll_args = "int NL", name = "NL",scode = "int NL;// # leaves",  block = "tdata")+
+                           stanvar(pll_args = "int NW", name = "NW",scode = "int NW;// # splits",  block = "tdata")+
+                           stanvar(scode = stanvars_trf_data, block = "tdata")+
+                           stanvar(scode = "vector[NW] C; // one hot to select a feature at each node", pll_args = "vector C" ,block = "parameters")+
+                           stanvar(scode = "vector[NL] mu_T;// mean of Y at each leaf", pll_args = "vector mu_T" ,block = "parameters")+
+                           stanvar(scode = stanvars_par, block = "parameters")+
+                           stanvar(scode = "matrix[NW,K_T] H; // one hot to select a feature at each node", pll_args = "matrix H" ,block = "model")+
+                           stanvar(scode = stanvars_trf_p, block = "model")+
+                           stanvar(length(X$y), name = "N_T",scode = "  int N_T;")+ # number of samples
+                           stanvar(as.integer(length(X[1,])-1), name = "K_T",scode = "  int K_T;")+ # number of features (minus 1 to exclude y)
+                           stanvar(as.matrix(X%>%select(-y)), name = "X_T",scode = "  matrix[N_T,K_T] X_T;")+# here we add the design matrix X directly to the model
+                           stanvar(X$y, name = "y_T",scode = "  vector[N_T] y_T;")+# here we add the target samples y directly to the model
+                           
+                           stanvar(as.integer(4), name = "L_T",scode = "  int L_T;")+ # number of levels in the tree
+                           stanvar(1, name = "T_T",scode = "  real T_T;")+ # temperature of the softmax
+                           stanvar(0.2, name = "alpha_T",scode = "  real alpha_T;")+ # alpha parameter fo the dirichlet prior for P
+                           stanvar(length(X$y)%/%10, name = "grainsize_T",pll_args = "int grainsize_T",scode = "  int grainsize_T;") #suggested grainsize for the reduce_sum for the tree
+   
+   
+ # we use the priors function with check = false to push our additional priors and main LL function into the stancode.
+ priors = c(prior(" for (i in 1:NW){G[i] ~ gumbel(0,1);} // each vector of gumbels used to create a one-hot", check = FALSE)
+           ,prior("C~normal(0,1); //features in the design matrix are normalised so the cutoffs should be normalised I suggest", check = FALSE)
+           ,prior("for (i in 1:NW){ to_vector(P[i]) ~ dirichlet(rep_vector(alpha_T,K_T));}//P also needs a prior and should have a U shaped dirichlet", check = FALSE)
+           )
+# 
+
+
+
+```
+
+try out the code generator
+
+```{r}
+ formula = bf(y ~  1)
+ 
+ stancode =make_stancode(formula
+                               , family = gumbeltree # needed if you want to do something else with the data as well as the tree
+                               , stanvars = stanvars_gumbeltree
+                               ,data = data.frame(y=1) 
+                               ,backend = "cmdstanr" 
+                               ,threads = threading(20)
+                               ,iter = 200
+                               ,warmup = 200
+                               ,chains = 2
+                               ,refresh =10
+                               ,max_treedepth=20
+                               ,adapt_delta =0.99
+                               #,inits = "0"
+                               #,thin =1
+                               ,prior = priors
+) 
+
+stancode # type out the stancode for bug checking before we try to run it
+
+```
+
+now try to compile
+
+```{r}
+BRMS_example2 =brm(formula
+                   , family = gumbeltree
+                  ,stanvars = stanvars_gumbeltree
+                  ,data = data.frame(y=c(1,2)) 
+                  ,backend = "cmdstanr"
+                  ,threads = threading(20)
+                  ,cores = 20
+                  ,iter = 200
+                  ,warmup = 150
+                  ,chains = 4
+                  ,refresh =10
+                  ,max_treedepth=10
+                  ,adapt_delta =0.9
+                  #,inits = "0"
+                  #,thin =1
+                  ,prior = priors
+) 
+
+save(BRMS_example2, file = "BRMS_example2.RData")
+```
+this also works. But what if I want the model to store the estimate of y for each row of X. I should have a transformed vector parameter mu_T that is the calculation from the tree.
+
+```{r}
+
+library(brms)
+gumbeltree_mu_X <- custom_family(
+  "gumbeltree_mu_X", dpars = c("mu"), # actually mu is really the sigma for the tree, but the first parameter has to be called mu,  
+                                  # and this is the only parameter that BRMS will be handling
+  links = c("log"),# sigma needs a log link function to stay positive
+
+  type = "real",
+  vars = c("mu_X[n]") # estimates mean for a given X[i] is passed to the function
+  #vars = c("grainsize_T")
+)
+
+# rewrite the code such that the mu_T is calculated in the transformed parameters section getting rid of H
+
+stan_funs_gumbeltree_mu_X <- "
+
+vector mu_X_calc(matrix X
+                  , matrix H
+                  , vector C
+                  , vector mu
+                  , int K
+                  , int L
+                  , int NW
+                  , int NL
+                  , int N
+                  ) {
+  // we use this version of the function when calculating mu_T in transformed parameters so
+  // that we don't have to declare all the additional variables in trf param section as well
+  
+  matrix[NW,N] w; //calculation of the weight for each node for each sample
+  matrix[NL,N] temp; //temporary store of tree calculations
+                      // after processing, the first row of temp becomes
+                      //the estimation of Y given X i.e. y^=F(X)
+  int c;// local integer parameter
+  int c2;// local integer parameter
+
+  // this is effectively (approximately) choosing which branch of the tree to traverse, based on a cutoff applied to a selected feature
+  w=inv_logit(10*((H*X')+rep_matrix(C,N)));
+
+  // start at the bottom of the tree and work upwards
+  // at the end of the loop temp[1] is the result of applying the tree to X[i]
+  temp = rep_matrix(mu,N) ;
+  
+  for (j in L:1){
+   c=1;
+   for (k in 1:(j-1)){
+     c = c*2;// can only make integer c = (2^(j-1)) inside a loop
+   }
+
+   for (k in 1:c){
+     c2=1;
+     for (l in 1:j){
+       c2 = c2*2;// can only make integer c2 = 2^j inside a loop
+     }
+     temp[k]=w[k+NW-c2+1] .* temp[2*k-1] + (1-w[k+NW-c2+1]) .* temp[2*k]; // cycling through the tree and calculating which leaf is retained based on w
+   }
+  }
+
+    return temp[1]';// this is mu_X, the estimate of Y given the tree 
+}
+
+real gumbeltree_mu_X_lpdf(real y, real sigma, real mu){
+  return normal_lpdf(y|mu,sigma);
+}
+
+"
+stanvars_trf_data = " 
+  NL=1;
+  for (i in 1:L_T){
+    NL = NL*2;// can only make integer 2^L inside a loop
+  }
+  NW=NL-1;
+"
+
+ stanvars_likelihood = "
+  mu_X[start:end] = mu_X_calc( X_T[start:end]
+                  ,  H
+                  ,  C
+                  ,  mu_T
+                  ,  K_T
+                  ,  L_T
+                  ,  NW
+                  ,  NL
+                  , N
+                  );
+  
+ "
+ 
+ stanvars_model = "
+ for (j in 1:NW){
+      H[j] = softmax( (log(P[j])*(T_T^2 + T_T +1) / (T_T+1) + G[j])/T_T)' ;
+      // selects a parameter using the approximate one-hot dot producted against a specific X[i], adds a cutoff constant and applies a logistic to return (~0,~1). In model section for computational efficiency
+  }
+ "
+
+# we will use the suffix _T to denote parameters for the tree function to avoid accidentally conflicting a parameter with BRMS
+# we are essentially shoehorning our own code into BRMS by force, rendering the main part of the model irrelevant at this stage.
+# At a later stage, we can envisage BRMS code running a different model as well. e.g a GLM with the tree function providing estimates of the missing variables
+stanvars_gumbeltree_mu_X <- stanvar(scode = stan_funs_gumbeltree_mu_X, block = "functions")+
+                           stanvar(pll_args = "int NL", name = "NL",scode = "int NL;// # leaves",  block = "tdata")+
+                           stanvar(pll_args = "int NW", name = "NW",scode = "int NW;// # splits",  block = "tdata")+
+                           stanvar(scode = stanvars_trf_data, block = "tdata")+
+                           stanvar(scode = "vector[NW] C; // one hot to select a feature at each node", pll_args = "vector C",block = "parameters")+
+                           stanvar(scode = "  vector[NL] mu_T;// mean of Y at each leaf", pll_args = "vector mu_T", block = "parameters")+
+                           stanvar(scode = "  vector[K_T] G[NW];//number of gumbel samples needed to select a feature at each node", block = "parameters")+
+                           stanvar(scode = "simplex[K_T] P[NW];//probability vector indicating the probability of selecting each feature at each node, each group adds to 1 i.e. simplex", block = "parameters")+
+                           stanvar(scode = "vector[end] mu_X;// mean of Y for each X[i]" ,block = "likelihood")+
+                           stanvar(scode = stanvars_likelihood, block = "likelihood")+
+                           stanvar(scode = "matrix[NW,K_T] H; // one hot to select a feature at each node", pll_args = "matrix H", block = "model")+
+                           stanvar(scode = stanvars_model, block = "model")+
+                           stanvar(as.integer(length(X[1,])-1), name = "K_T",scode = "  int K_T;")+ # number of features in X_T
+                           stanvar(as.matrix(X%>%select(-y)), name = "X_T",scode = "  matrix[N,K_T] X_T;")+# here we add the design matrix X directly to the model
+                           stanvar(as.integer(4), name = "L_T",scode = "  int L_T;")+ # number of levels in the tree
+                           stanvar(1, name = "T_T",scode = "  real T_T;")+ # temperature of the softmax
+                           stanvar(0.2, name = "alpha_T",scode = "  real alpha_T;") # alpha parameter fo the dirichlet prior for P
+   
+   
+ # we use the priors function with check = false to push our additional priors and main LL function into the stancode.
+ priors_mu_X = c(prior(" for (i in 1:NW){G[i] ~ gumbel(0,1);} // each vector of gumbels used to create a one-hot", check = FALSE)
+           ,prior("C~normal(0,1); //features in the design matrix are normalised so the cutoffs should be normalised I suggest", check = FALSE)
+           ,prior("for (i in 1:NW){ to_vector(P[i]) ~ dirichlet(rep_vector(alpha_T,K_T));}//P also needs a prior and should have a U shaped dirichlet", check = FALSE)
+           )
+# 
+
+
+
+```
+
+
+```{r}
+
+# calculating residuals
+library(tidybayes)
+
+
+# function to calculate weights off the various data frames
+weight_f = function(X,# not including y
+                    BRMS_fit,
+                    K,
+                    L,
+                    NW,
+                    NL,
+                    Temp,N) {
+  
+  H_samples = BRMS_example %>% 
+                  spread_draws(H[NW,K_T],C[NW])
+  C_samples = BRMS_example %>% 
+                  spread_draws(C[NW])
+  mu_samples = BRMS_example %>% 
+                  spread_draws(mu_T[NL])
+  L = BRMS_fit$stanvars$L_T$sdata
+  K = BRMS_fit$stanvars$K_T$sdata
+  
+  w=inv_logit_scaled(10*(H %*% t(X) + matrix(rep(C,N),ncol = N) ))# weights matrix
+
+  # start at the bottom of the tree and work upwards
+  # at the end of the loop temp[1] is the result of applying the tree to X[i]
+  temp = matrix(rep(mu,N),ncol = N) 
+  for (j in L:1){
+   for (k in 1:(2^(j-1)) ){
+     temp[k]=w[k+NW-2^j+1] * temp[2*k-1] + (1-w[k+NW-2^j+1]) * temp[2*k]; # cycling through the tree and calculating which leaf is retained based on w
+   }
+  }
+
+     t(temp[1])  # expected y assuming that y is a function that ranges (-inf,+inf)
+}
+  
+
+```
+
+write out the new code
+
+```{r}
+ formula = bf(y ~  1)
+ 
+ stancode_mu_X =make_stancode(formula
+                               ,family = gumbeltree_mu_X # needed if you want to do something else with the data as well as the tree
+                               ,stanvars = stanvars_gumbeltree_mu_X
+                               ,data = (X %>% select(y))
+                               #,backend = "cmdstanr"
+                               ,threads = threading(20)
+                               ,iter = 20
+                               ,warmup = 10
+                               ,chains = 2
+                               ,refresh =1
+                               ,max_treedepth=20
+                               ,adapt_delta =0.99
+                               #,inits = "0"
+                               #,thin =1
+                               ,prior = priors_mu_X
+) 
+
+stancode_mu_X # type out the stancode for bug checking before we try to run it
+
+```
+ok. now try to compile.
+
+```{r}
+options("cmdstanr_verbose"=FALSE)
+
+BRMS_mu_X =brm(formula
+                ,family = gumbeltree_mu_X # needed if you want to do something else with the data as well as the tree
+                ,stanvars = stanvars_gumbeltree_mu_X
+                ,data = (X %>% select(y))
+                ,backend = "cmdstanr"
+                ,threads = threading(20)
+                ,cores =20
+                ,iter = 20
+                ,warmup = 10
+                ,chains = 2
+                ,refresh =1
+                ,max_treedepth=15
+                ,adapt_delta =0.9
+                #,inits = "0"
+                #,thin =1
+                ,prior = priors_mu_X
+                #,quiet = TRUE
+               , silent = 2
+) 
+
+
+
+save(BRMS_mu_X, file = "BRMS_mu_X.RData")
+```
+now we can calculate residuals using the calc_mu_X function. Normally expose_functions would do this for us but we used cmdstanr
+
+```{r}
+
+# expose_functions(BRMS_mu_X) fails because we are not using rstan
+# lets recompile the model with chains=0 to build an rstan version
+
+BRMS_mu_X_rstan =brm(formula
+                ,family = gumbeltree_mu_X # needed if you want to do something else with the data as well as the tree
+                ,stanvars = stanvars_gumbeltree_mu_X
+                ,data = data.frame(y=1)
+                #,backend = "cmdstanr" run with rstan
+                #,threads = threading(20)
+                #,cores =20
+                ,iter = 10
+                ,warmup = 5
+                ,chains = 0 # don't run the model, just compile
+                ,refresh =1
+                ,max_treedepth=15
+                ,adapt_delta =0.9
+                #,inits = "0"
+                #,thin =1
+                ,prior = priors_mu_X
+                #,quiet = TRUE
+               ,silent = 0
+) 
+
+
+
+
+ mu_X_calc = function( X
+                  ,  H
+                  ,  C
+                  ,  mu
+                  ,  K
+                  ,  L
+                  ,  NW
+                  ,  NL
+                  ,  N
+                  ) {
+   
+   matrix[NW,K_T] H; // one hot to select a feature at each node
+  
+ for (j in 1:NW){
+      H[j] = t(softmax( (log(P[j])*(T_T^2 + T_T +1) / (T_T+1) + G[j])/T_T)) 
+      # selects a parameter using the approximate one-hot dot producted against a specific X[i], adds a cutoff constant and applies a logistic to return (~0,~1). In model section for computational efficiency
+  }
+  
+  # we use this version of the function when calculating mu_T in transformed parameters so
+  # that we don't have to declare all the additional variables in trf param section as well
+  
+  
+ # this is effectively (approximately) choosing which branch of the tree to traverse, based on a cutoff applied to a selected feature
+  w=inv_logit_scaled(10*(H %*% t(X)+matrix(rep(C,N),ncols=N)))
+
+  # start at the bottom of the tree and work upwards
+  # at the end of the loop temp[1] is the result of applying the tree to X[i]
+  temp = matrix(rep(mu,N),ncol = N) 
+  
+  for (j in L:1){
+   for (k in 1:(2^(j-1))){
+     temp[k]=w[k+NW-2^j+1] * temp[2*k-1] + (1-w[k+NW-2^j+1]) * temp[2*k] # cycling through the tree and calculating which leaf is retained based on w
+   }
+  }
+
+  t(temp[1]) # this is mu_X, the estimate of Y given the tree 
+}
+
+# test it out
+mu_X = mu_X_calc( X%>%select(-y)
+                  ,  H
+                  ,  C
+                  ,  mu
+                  ,  K
+                  ,  L
+                  ,  NW
+                  ,  NL
+                  ,  N
+                  )
+
+
+```
+
+Now run a longer model
+
+```{r}
+options("cmdstanr_verbose"=FALSE)
+
+BRMS_mu_X =brm(formula
+                ,family = gumbeltree_mu_X # needed if you want to do something else with the data as well as the tree
+                ,stanvars = stanvars_gumbeltree_mu_X
+                ,data = (X %>% select(y))
+                ,backend = "cmdstanr"
+                ,threads = threading(20)
+                ,cores =20
+                ,iter = 200
+                ,warmup = 150
+                ,chains = 4
+                ,refresh =10
+                ,max_treedepth=18
+                ,adapt_delta =0.9
+                #,inits = "0"
+                #,thin =1
+                ,prior = priors_mu_X
+                #,quiet = TRUE
+               , silent = 2
+) 
+
+
+
+
+save(BRMS_mu_X, file = "BRMS_mu_X.RData")
 ```
