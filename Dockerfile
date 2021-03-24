@@ -23,9 +23,10 @@ RUN apt-get update \
     sp \
     sweep \
     xts 
-RUN r -e "options(download.file.method = 'wininet') ; devtools::install_github('paul-buerkner/brms',dependencies = TRUE)" 
-RUN r -e "install.packages('cmdstanr', repos = c('https://mc-stan.org/r-packages/', getOption('repos')))"
-RUN r -e "cmdstanr::install_cmdstan(cores = 10,overwrite=TRUE)"
+#RUN r -e "devtools::install_github('paul-buerkner/brms',dependencies = TRUE)" 
+RUN r -e "install.packages('brms', repos = c('https://mc-stan.org/r-packages/', getOption('repos')))"
+#RUN r -e "install.packages('cmdstanr', repos = c('https://mc-stan.org/r-packages/', getOption('repos')))"
+#RUN r -e "cmdstanr::install_cmdstan(cores = 10,overwrite=TRUE)"
   
 
 
