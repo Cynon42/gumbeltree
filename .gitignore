@@ -9,3 +9,4 @@
 gumbeltree2.exe
 gumbeltree_reduce.exe
 gumbeltree_reduce_threads.exe
+*.RData
