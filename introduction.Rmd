@@ -20,7 +20,6 @@ I have created an example decision tree as I see it working and we will try to i
 
 I put the actual stancode below, but first I set up the cmdstanr engine for processinf cmdstanr stancode as it is more up to date at the moment.
 
-```{r}
 ```{r, eval = FALSE}
 
 # this code chunk is made redundant by the installation of the github versions on BRMS and cmdstanr into the docker image.
