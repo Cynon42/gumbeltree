@@ -2957,10 +2957,11 @@ for (i in 1:N){
   quantiles[i,] = quantile(mu_X[i,], probs = c(0.01,0.5,0.99))
 }
 X = X%>%mutate(p01 = quantiles[,1],p50 = quantiles[,2],p99 = quantiles[,3])
-X%>%plot_ly(x=~x2, y=~x3, z=~y, type = "scatter3d", mode = "markers",size =1, name = "y", color = "blue")%>%
-add_trace(x=~x2, y=~x3, z=~p01, type = "scatter3d", mode = "markers",size =0.5,name="predicted at 1%", color = "green")%>%
-  add_trace(x=~x2, y=~x3, z=~p99, type = "scatter3d", mode = "markers",size =0.5,name="predicted at 99%", color = "orange")
+X%>%plot_ly(x=~x2, y=~x3, z=~y, type = "mesh3d")%>%
+add_trace(x=~x2, y=~x3, z=~p01, type = "mesh3d")%>%
+add_trace(x=~x2, y=~x3, z=~p99, type = "mesh3d")
   
 
 ```
-
+Orange and green encase blue so the fit is good.
+I think we can conclude the basic tree model and move onto BART and boosting.
