@@ -7,7 +7,6 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_chunk$set(eval = FALSE)
 ```
 
 ## have a go at formulation in BRMS
@@ -307,7 +306,7 @@ now that I have the components to perform a BRMS setup with the model. lets call
 
 
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 
  stancode =make_stancode(y~1
                                #, family = gumbeltree # needed if you want to do something else with the data as well as the tree
@@ -333,7 +332,7 @@ stancode # type out the stancode for bug checking before we try to run it
 
 Now that we have created BRMS compatible stancode. Lets try to compile it. This is the next debugging step. We modify the stancode further to get rid of the final issues in the code such that it compiles and runs without error.
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 
  Test_BRMS =brm(y~1
                                #, family = gumbeltree # needed if you want to do something else with the data as well as the tree
@@ -359,7 +358,7 @@ Readers may note that the BRMS package has effectively been used like a trojan h
 
 The test has worked so we may now run a longer model that may be amenable to further residuals analysis.
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 BRMS_example  =brm(y~1
                                #, family = gumbeltree # needed if you want to do something else with the data as well as the tree
                                , stanvars = stanvars_gumbeltree
@@ -382,7 +381,7 @@ save(BRMS_example, file = "BRMS_example.RData")
 ```
 Completion time isn't great, but the model seemed to work ok. Lets have a look with Shinystan. A bit easier now that the model is in BRMS.
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 library(shinystan)
 launch_shinystan(BRMS_example)
 
@@ -544,7 +543,7 @@ stanvars_gumbeltree <- stanvar(scode = stan_funs_gumbeltree, block = "functions"
 
 try out the code generator
 
-```{r}
+```{r eval=FALSE, include=FALSE}
  formula = bf(y ~  1)
  
  stancode =make_stancode(formula
@@ -570,7 +569,7 @@ stancode # type out the stancode for bug checking before we try to run it
 
 now try to compile
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 BRMS_example2 =brm(formula
                    , family = gumbeltree
                   ,stanvars = stanvars_gumbeltree
@@ -591,7 +590,7 @@ BRMS_example2 =brm(formula
 
 save(BRMS_example2, file = "BRMS_example2.RData")
 ```
-this also works. But what if I want the model to store the estimate of y for each row of X. I should have a transformed vector parameter mu_T that is the calculation from the tree.
+this also runs. But what if I want the model to store the estimate of y for each row of X. I should have a transformed vector parameter mu_T that is the calculation from the tree.
 
 ```{r}
 
@@ -716,7 +715,7 @@ stanvars_gumbeltree_mu_X <- stanvar(scode = stan_funs_gumbeltree_mu_X, block = "
 
 write out the new code
 
-```{r}
+```{r eval=FALSE, include=FALSE}
  formula = bf(y ~  1)
  
  stancode_mu_X =make_stancode(formula
@@ -741,7 +740,7 @@ stancode_mu_X # type out the stancode for bug checking before we try to run it
 ```
 ok. now try to compile.
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 options("cmdstanr_verbose"=FALSE)
 
 BRMS_mu_X =brm(formula
@@ -755,7 +754,7 @@ BRMS_mu_X =brm(formula
                 ,warmup = 150
                 ,chains = 4
                 ,refresh =10
-                ,max_treedepth=15
+                ,max_treedepth=10
                 ,adapt_delta =0.9
                 #,inits = "0"
                 #,thin =1
@@ -858,8 +857,10 @@ H_calc = function(G,P,NW,K,Temp){
 
 Now try to use the function to test it.
 
-```{r}
+```{r }
 library(tidybayes)
+library(brms)
+library(dplyr)
 load("BRMS_mu_X.RData")
 L = BRMS_mu_X$stanvars$L_T$sdata
 K = BRMS_mu_X$stanvars$K_T$sdata
@@ -874,7 +875,7 @@ N = length(BRMS_mu_X$data$y)
 Temp = BRMS_mu_X$stanvars$T_T$sdata
 
 # test it out
-residual_test = mu_X_calc( as.matrix(X%>%select(-y))
+residual_test = mu_X_calc( as.matrix(X%>%dplyr::select(-y))
           ,  as.matrix(P[,,1])
           ,  as.matrix(G[,,1])
           ,  as.vector(C[,1])
@@ -1079,7 +1080,7 @@ stanvars_gumbeltree_multi_C <- stanvar(scode = stan_funs_gumbeltree_mu_X, block 
 
 run the simplest possible tree model.
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 
 BRMS_mu_X_simplest =brm(y~1
                 ,family = gumbeltree_mu_X # needed if you want to do something else with the data as well as the tree
@@ -1110,7 +1111,7 @@ now the residuals:
  first grab the parameters.
  
 ```{r}
-
+load("BRMS_mu_X_simplest.RData")
 model = BRMS_mu_X_simplest
 
 L = model$stanvars$L_T$sdata
@@ -1303,7 +1304,7 @@ stanvars_gumbeltree_multi_C <- stanvar(scode = stan_funs_gumbeltree_mu_X, block 
 ```
 
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 options("cmdstanr_verbose"=FALSE)
 
 BRMS_multi_C =brm(formula
@@ -1378,7 +1379,7 @@ save(BRMS_multi_C, file = "BRMS_multi_C.RData")
 
 ```{r}
 library(tidybayes)
-#load("BRMS_mu_X.RData")
+load("BRMS_multi_C.RData")
 
 model = BRMS_multi_C
 L = model$stanvars$L_T$sdata
@@ -1585,7 +1586,7 @@ stanvars_gumbeltree_multi_C <- stanvar(scode = stan_funs_gumbeltree_mu_X, block 
 ```
 
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 options("cmdstanr_verbose"=FALSE)
 
 BRMS_static_C =brm(formula
@@ -1617,7 +1618,7 @@ save(BRMS_static_C, file = "BRMS_static_C.RData")
 ```{r}
 library(tidybayes)
 
-
+load("BRMS_static_C.RData")
 model = BRMS_static_C
 L = model$stanvars$L_T$sdata
 K = model$stanvars$K_T$sdata
@@ -1684,7 +1685,7 @@ lines(x=X$x1, y=mu_X[,7], type = "p")
 lines(x=X$x1, y=mu_X[,8], type = "p")
 
 ```
-not working properly if you ask me. lets check a synthetic model again. this time with 2 layers.
+not working properly if you ask me (pretty funny actually). lets check a synthetic model again. this time with 2 layers.
 
 
 
@@ -1717,7 +1718,7 @@ X = X%>%mutate(y=y)
 plot(X$x1,X$y) #show the function as a plot
 
 ```
-
+Generating a model that uses only one dimension of x, and is generated with the same model that we are fitting. You can see gentle rounded steps here rather than the sharp steps an actual tree process would generate. Four leaves at four levels of y are needed at four ranges on x1.
 
 ```{r}
 library(brms)
@@ -1840,7 +1841,7 @@ stanvars_gumbeltree_multi_C <- stanvar(scode = stan_funs_gumbeltree_mu_X, block 
 ```
 
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 options("cmdstanr_verbose"=FALSE)
 
 BRMS_2L_sim =brm(formula
@@ -1872,7 +1873,7 @@ save(BRMS_2L_sim, file = "BRMS_2L_sim.RData")
 ```{r}
 library(tidybayes)
 
-
+load("BRMS_2L_sim.RData")
 model = BRMS_2L_sim
 L = model$stanvars$L_T$sdata
 K = model$stanvars$K_T$sdata
@@ -2104,7 +2105,7 @@ stanvars_gumbeltree_multi_C <- stanvar(scode = stan_funs_gumbeltree_mu_X, block 
 ```
 
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 options("cmdstanr_verbose"=FALSE)
 
 BRMS_12x =brm(formula
@@ -2114,11 +2115,11 @@ BRMS_12x =brm(formula
                 ,backend = "cmdstanr"
                 ,threads = threading(20)
                 ,cores =20
-                ,iter = 500
+                ,iter = 200
                 ,warmup = 150
-                ,chains = 0
+                ,chains = 1
                 ,refresh =50
-                ,max_treedepth=18
+                ,max_treedepth=10
                 ,adapt_delta =0.9
                 #,inits = "0"
                 #,thin =1
@@ -2136,7 +2137,7 @@ save(BRMS_12x, file = "BRMS_12x.RData")
 ```{r}
 library(tidybayes)
 
-
+load("BRMS_12x.RData")
 model = BRMS_12x
 L = model$stanvars$L_T$sdata
 K = model$stanvars$K_T$sdata
@@ -2206,28 +2207,13 @@ lines(x=X$x1, y=quantiles[,3], type = "p", col="blue")
 lines(x=X$x1, y=X$y, col="red",type = "p")
 
 ```
-Found the bug. When y is passed to BRMS, it is re-ordered from max to min. This is the opposite order that I calculated, so the model would be randomising y essentially.
+Found another bug. When y is passed to BRMS, it is re-ordered from max to min. This is the opposite order that I calculated, so the model would be randomising y essentially.
 
 Bug fix is to not pass y as part of the data, or to also pass X so it is also re-ordered. The easy option is to pass my own y_T separately. But I will fall back to the original BRMS implementation I think. After fixing bugs and simplifying X.
 
-```{r eval=FALSE, include=FALSE}
-#lets simplify X
-  X = data.frame(x1=rep(100,1000)#column of same high number, this is the feature that does nothing
-               ,x2=rnorm(1000,0,1)#normalised features 2-10
-               ,x3=rnorm(1000,0,1)
-               #,x4=rnorm(1000,0,1)
-               #,x5=rnorm(1000,0,1)
-               #,x6=rnorm(1000,0,1)
-               #,x7=rnorm(1000,0,1)
-               #,x8=rnorm(1000,0,1)
-               #,x9=rnorm(1000,0,1)
-               #,x10=rnorm(1000,0,1)
-               )%>%
-  mutate(y = sin(x2))# a function to try to approximate
+I also found the most serious bug. All the mu_X are the same number. Needed to fix the for loop (j in L_T:1). It was never entered for trees larger than L_T=1 because the algorithm only accepts increasing j!!
 
-```
 
-I found the main bug. the for loop (j in L_T:1) was never entered for trees larger than L_T=1 because the algorithm only accepts increasing j!!
 ```{r}
 
 # define tree parameters
@@ -2265,7 +2251,7 @@ vector mu_X_calc(matrix X
   // at the end of the loop temp[1] is the result of applying the tree to X[i]
   temp = rep_matrix(mu,N) ;
   
-  for (j in 1:L){
+  for (j in 1:L){ // **** main bug fix. This has to be increasing. Stan does not accept decreasing ranges of j for loops.
    c2=1;
    c=1+L-j; // need c to be the lowest level of the tree working upwards
    for (l in 1:c){
@@ -2444,7 +2430,7 @@ stancode # type out the stancode for bug checking before we try to run it
 
 Lets try to compile it.  
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 
  Test_BRMS =brm(formula
                                , stanvars = stanvars_gumbeltree
@@ -2466,9 +2452,9 @@ Lets try to compile it.
 
 ```
 
-Awesome. Another bug. All the mu_X are the same number. try to fix
 
-```{r}
+
+```{r eval=FALSE, include=FALSE}
 BRMS_min_data =brm(formula
                                , stanvars = stanvars_gumbeltree
                                ,sample_prior="only"# ignore the brms model entirely
@@ -2476,11 +2462,11 @@ BRMS_min_data =brm(formula
                                ,backend = "cmdstanr"
                                ,threads = threading(20)
                                ,cores = 20
-                               ,iter = 500
+                               ,iter = 200
                                ,warmup = 150
                                ,chains = 4
                                ,refresh =50
-                               ,max_treedepth=20
+                               ,max_treedepth=12
                                ,adapt_delta =0.99
                                #,inits = "0"
                                #,thin =1
@@ -2495,7 +2481,7 @@ now for some plots
 ```{r}
 library(tidybayes)
 
-
+load("BRMS_min_data.RData")
 model = BRMS_min_data
 L = model$stanvars$L_T$sdata
 K = model$stanvars$K_T$sdata
@@ -2566,7 +2552,7 @@ lines(x=X$x1, y=quantiles[,3], type = "p", col="blue")
 lines(x=X$x1, y=X$y, col="red",type = "p")
 
 ```
-OK. working :) Pernitious bugs!!
+OK. working now:) Pernitious bugs!!
 
 Now remove unnecessary code and priors. And upgrade X.
 
@@ -2722,7 +2708,7 @@ stanvars_gumbeltree <- stanvar(scode = stan_funs_part_sum, block = "functions")+
 Lets try to compile it.  
 
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 BRMS_L2 =brm(formula
                                , stanvars = stanvars_gumbeltree
                                ,sample_prior="only"# ignore the brms model entirely
@@ -2749,7 +2735,7 @@ now for some plots
 ```{r}
 library(tidybayes)
 
-
+load("BRMS_L2.RData")
 model = BRMS_L2
 L = model$stanvars$L_T$sdata
 K = model$stanvars$K_T$sdata
@@ -2820,7 +2806,7 @@ lines(x=X$x1, y=quantiles[,3], type = "p", col="blue")
 lines(x=X$x1, y=X$y, col="red",type = "p")
 
 ```
-Lets test a 2 dimensional f(x) and a 4 level tree.
+Great. A two level tree is working now. Lets test a 2 dimensional f(x) and a 4 level tree.
 
 ```{r}
 N=1000
@@ -2864,7 +2850,7 @@ stanvars_gumbeltree$grainsize_T$sdata=grainsize_model
 Lets try to compile it.  
 
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 BRMS_2df =brm(y~1
                                , stanvars = stanvars_gumbeltree
                                ,sample_prior="only"# ignore the brms model entirely
@@ -2891,7 +2877,7 @@ now for some plots
 ```{r}
 library(tidybayes)
 
-
+load("BRMS_2df.RData")
 model = BRMS_2df
 L = model$stanvars$L_T$sdata
 K = model$stanvars$K_T$sdata
@@ -2957,9 +2943,11 @@ for (i in 1:N){
   quantiles[i,] = quantile(mu_X[i,], probs = c(0.01,0.5,0.99))
 }
 X = X%>%mutate(p01 = quantiles[,1],p50 = quantiles[,2],p99 = quantiles[,3])
-X%>%plot_ly(x=~x2, y=~x3, z=~y, type = "mesh3d")%>%
-add_trace(x=~x2, y=~x3, z=~p01, type = "mesh3d")%>%
-add_trace(x=~x2, y=~x3, z=~p99, type = "mesh3d")
+X%>%plot_ly(x=~x2, y=~x3, z=~y, type = "mesh3d", name = "Actual" )%>%
+add_trace(x=~x2, y=~x3, z=~p01, type = "mesh3d", opacity=0.5, name = "fitted at 1%")%>%
+add_trace(x=~x2, y=~x3, z=~p99, type = "mesh3d", opacity=0.5, name = "fitted at 99%") %>% layout(showlegend = TRUE
+                                                                                                 ,legend = list(x = 0.1, y = 0.9, z = 0.9)
+                                                                                                 ,title = "Actual vs Fitted")
   
 
 ```

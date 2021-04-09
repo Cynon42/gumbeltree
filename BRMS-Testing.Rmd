@@ -7,7 +7,6 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_chunk$set(eval = FALSE)
 ```
 
 ## have a go at formulation in BRMS
@@ -308,8 +307,11 @@ now that I have the components to perform a BRMS setup with the model. lets call
 
 
 ```{r}
+ formula = bf(y ~  1)
 
- stancode =make_stancode(y~1
+
+ options("cmdstanr_verbose"=FALSE)
+ stancode =make_stancode(formula
                                #, family = gumbeltree # needed if you want to do something else with the data as well as the tree
                                , stanvars = stanvars_gumbeltree
                                ,data = data.frame(y=1) 
@@ -335,7 +337,7 @@ Now that we have created BRMS compatible stancode. Lets try to compile it. This 
 
 ```{r}
 
- Test_BRMS =brm(y~1
+ Test_BRMS =brm(formula
                                #, family = gumbeltree # needed if you want to do something else with the data as well as the tree
                                , stanvars = stanvars_gumbeltree
                                ,data = data.frame(y=1) 
@@ -346,7 +348,7 @@ Now that we have created BRMS compatible stancode. Lets try to compile it. This 
                                ,warmup = 10
                                ,chains = 1
                                ,refresh =1
-                               ,max_treedepth=10
+                               ,max_treedepth=20
                                ,adapt_delta =0.99
                                #,inits = "0"
                                #,thin =1
@@ -360,27 +362,26 @@ Readers may note that the BRMS package has effectively been used like a trojan h
 The test has worked so we may now run a longer model that may be amenable to further residuals analysis.
 
 ```{r}
-BRMS_example  =brm(y~1
-                               #, family = gumbeltree # needed if you want to do something else with the data as well as the tree
-                               , stanvars = stanvars_gumbeltree
-                               ,data = data.frame(y=1) 
-                               ,backend = "cmdstanr"
-                               ,threads = threading(20)
-                               ,cores = 20
-                               ,iter = 200
-                               ,warmup = 150
-                               ,chains = 4
-                               ,refresh =10
-                               ,max_treedepth=10
-                               ,adapt_delta =0.99
-                               #,inits = "0"
-                               #,thin =1
-                               ,prior = priors
+BRMS_example =brm(formula
+                  , stanvars = stanvars_gumbeltree
+                  ,data = data.frame(y=1) 
+                  #,backend = "cmdstanr"
+                  ,threads = threading(20)
+                  ,cores = 20
+                  ,iter = 200
+                  ,warmup = 150
+                  ,chains = 4
+                  ,refresh =10
+                  ,max_treedepth=20
+                  ,adapt_delta =0.99
+                  #,inits = "0"
+                  #,thin =1
+                  ,prior = priors
 ) 
 
 save(BRMS_example, file = "BRMS_example.RData")
 ```
-Completion time isn't great, but the model seemed to work ok. Lets have a look with Shinystan. A bit easier now that the model is in BRMS.
+11 hours completion time isn't great, but the model seemed to work ok. Lets have a look with Shinystan. A bit easier now that the model is in BRMS.
 
 ```{r}
 library(shinystan)
