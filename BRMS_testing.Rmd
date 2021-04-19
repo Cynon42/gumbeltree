@@ -2942,8 +2942,8 @@ quantiles = array(dim = c(N,3))
 for (i in 1:N){
   quantiles[i,] = quantile(mu_X[i,], probs = c(0.01,0.5,0.99))
 }
-X = X%>%mutate(p01 = quantiles[,1],p50 = quantiles[,2],p99 = quantiles[,3])
-X%>%plot_ly(x=~x2, y=~x3, z=~y, type = "mesh3d", name = "Actual" )%>%
+X_plot = X%>%mutate(p01 = quantiles[,1],p50 = quantiles[,2],p99 = quantiles[,3])
+X_plot%>%plot_ly(x=~x2, y=~x3, z=~y, type = "mesh3d", name = "Actual" )%>%
 add_trace(x=~x2, y=~x3, z=~p01, type = "mesh3d", opacity=0.5, name = "fitted at 1%")%>%
 add_trace(x=~x2, y=~x3, z=~p99, type = "mesh3d", opacity=0.5, name = "fitted at 99%") %>% layout(showlegend = TRUE
                                                                                                  ,legend = list(x = 0.1, y = 0.9, z = 0.9)
@@ -2953,3 +2953,1044 @@ add_trace(x=~x2, y=~x3, z=~p99, type = "mesh3d", opacity=0.5, name = "fitted at 
 ```
 Orange and green encase blue so the fit is good.
 I think we can conclude the basic tree model and move onto BART and boosting.
+
+## Advance BRMS to handle X and Y
+
+On reflection, for full utility of BRMS for prediction and LOOIC for model fits, it is necessary for BRMS to know both y and X. We can add these modifications if we pass
+
+```{r}
+
+library(brms)
+gumbeltree_xy <- custom_family(
+  "gumbeltree_xy", dpars = c("mu"), # actually mu is really the sigma for the tree, but the first parameter has to be called mu,  
+                                  # and this is the only parameter that BRMS will be handling
+  links = c("log"),# sigma needs a log link function to stay positive
+
+  type = "real",
+  vars = c("mu_X[n]") # estimates mean for a given X[i] is passed to the function
+  #vars = c("grainsize_T")
+)
+library(brms)
+
+# rewrite the code such that the mu_T is calculated in the transformed parameters section getting rid of H
+
+stan_funs_gumbeltree_xy <- "
+
+vector mu_X_calc(matrix X
+                  , matrix H
+                  , vector C
+                  , vector mu
+                  , int K
+                  , int L
+                  , int NW
+                  , int NL
+                  , int N
+                  ) {
+  // we use this version of the function when calculating mu_T in transformed parameters so
+  // that we don't have to declare all the additional variables in trf param section as well
+  
+  matrix[NW,N] w; //calculation of the weight for each node for each sample
+  matrix[NL,N] temp; //temporary store of tree calculations
+                      // after processing, the first row of temp becomes
+                      //the estimation of Y given X i.e. y^=F(X)
+  int c;// local integer parameter
+  int c2;// local integer parameter
+
+  // this is effectively (approximately) choosing which branch of the tree to traverse, based on a cutoff applied to a selected feature
+  w=inv_logit(10*((H*X')+rep_matrix(C,N)));
+
+  // start at the bottom of the tree and work upwards
+  // at the end of the loop temp[1] is the result of applying the tree to X[i]
+  temp = rep_matrix(mu,N) ;
+  
+  for (j in 1:L){
+    c2=1;
+    c=1+L-j; // need c to be the lowest level of the tree working upwards
+    for (l in 1:c){
+        c2 = c2*2;// can only make integer c2 = 2^C inside a loop
+    }
+    
+    for (k in 1:c2/2){
+        temp[k]=w[k+NW-c2+1] .* temp[2*k-1] + (1-w[k+NW-c2+1]) .* temp[2*k]; // cycling through the tree and calculating which leaf is retained based on w
+    }
+  }
+
+    return temp[1]';// this is mu_X, the estimate of Y given the tree 
+}
+
+real gumbeltree_xy_lpdf(real y, real sigma, real mu){
+  return normal_lpdf(y|mu,sigma);// correctly identify mu parameter as sigma, mu_X as mu
+}
+
+"
+stanvars_trf_data = " 
+  NL=1;
+  for (i in 1:L_T){
+    NL = NL*2;// can only make integer 2^L inside a loop
+  }
+  NW=NL-1;
+  for (i in 1:N){
+    X_T[i] = X_base[vint1[i]];// reordering X_base to match any reordering performed on y. BRMS pre-processing of y generally reorders the input data.
+  }
+"
+
+ stanvars_likelihood = "
+  mu_X[start:end] = mu_X_calc( X_T[start:end] ,H,C,mu_T,K_T,L_T,NW,NL,N );
+  
+ "
+ 
+ stanvars_model = "
+ for (j in 1:NW){
+      H[j] = softmax( (log(P[j])*(T_T^2 + T_T +1) / (T_T+1) + G[j])/T_T)' ;
+      // selects a parameter using the approximate one-hot dot producted against a specific X[i], adds a cutoff constant and applies a logistic to return (~0,~1). In model section for computational efficiency
+  }
+ "
+
+# we will use the suffix _T to denote parameters for the tree function to avoid accidentally conflicting a parameter with BRMS
+# we are essentially shoehorning our own code into BRMS by force, rendering the main part of the model irrelevant at this stage.
+# At a later stage, we can envisage BRMS code running a different model as well. e.g a GLM with the tree function providing estimates of the missing variables
+stanvars_gumbeltree_xy <- stanvar(scode = stan_funs_gumbeltree_xy, block = "functions")+
+                           stanvar(pll_args = "int NL", name = "NL",scode = "int NL;// # leaves",  block = "tdata")+
+                           stanvar(pll_args = "int NW", name = "NW",scode = "int NW;// # splits",  block = "tdata")+
+                           stanvar(pll_args = "matrix X_T", name = "X_T",scode = "matrix[N,K_T] X_T;// reorder X_base to match y using vint1",  block = "tdata")+# this passes the re-ordered design matrix so that rows match with y (as y has likely been reordered)
+                           stanvar(scode = stanvars_trf_data, block = "tdata")+
+                           stanvar(scode = "vector[NW] C; // cutoff level for the feature chosen at each node", name = "C", pll_args = "vector C",block = "parameters")+
+                           stanvar(scode = "  vector[NL] mu_T;// mean of Y at each leaf", name = "mu_T", pll_args = "vector mu_T", block = "parameters")+
+                           stanvar(scode = "  vector[K_T] G[NW];//number of gumbel samples needed to select a feature at each node", name = "G", block = "parameters")+
+                           stanvar(scode = "simplex[K_T] P[NW];//probability vector indicating the probability of selecting each feature at each node, each group adds to 1 i.e. simplex", name = "P", block = "parameters")+
+                           stanvar(scode = "vector[end] mu_X;" , name = "mu_X",block = "likelihood")+
+                           stanvar(scode = stanvars_likelihood, block = "likelihood")+
+                           stanvar(scode = "matrix[NW,K_T] H; // one hot to select a feature at each node", pll_args = "matrix H", block = "model")+
+                           stanvar(scode = stanvars_model, block = "model")+
+                           stanvar(as.integer(length(X[1,])-1), name = "K_T",scode = "  int K_T;")+ # number of features in X_T
+                           stanvar(as.matrix(X%>%select(-y)), name = "X_base",scode = "  matrix[N,K_T] X_base;")+# here we add the design matrix X directly to the model
+                           stanvar(as.integer(4), name = "L_T",scode = "  int L_T;")+ # number of levels in the tree
+                           stanvar(1, name = "T_T",scode = "  real T_T;")+ # temperature of the softmax
+                           stanvar(0.2, name = "alpha_T",scode = "  real alpha_T;") # alpha parameter fo the dirichlet prior for P
+   
+   
+ # we use the priors function with check = false to push our additional priors and main LL function into the stancode.
+ priors_xy = c(prior(" for (i in 1:NW){G[i] ~ gumbel(0,1);} // each vector of gumbels used to create a one-hot", check = FALSE)
+           ,prior("C~normal(0,1); //features in the design matrix are normalised so the cutoffs should be normalised I suggest", check = FALSE)
+           ,prior("for (i in 1:NW){ to_vector(P[i]) ~ dirichlet(rep_vector(alpha_T,K_T));}//P also needs a prior and should have a U shaped dirichlet", check = FALSE)
+           )
+# 
+
+
+
+```
+
+write out the new code
+
+```{r echo=TRUE}
+ formula = bf(y|vint(row) ~  1)
+ 
+ stancode_mu_X =make_stancode(formula
+                               ,family = gumbeltree_xy # needed if you want to do something else with the data as well as the tree
+                               ,stanvars = stanvars_gumbeltree_xy
+                               ,data = X %>% select(y)%>%mutate(row=1:n())
+                               #,backend = "cmdstanr"
+                               ,threads = threading(20)
+                               ,iter = 20
+                               ,warmup = 10
+                               ,chains = 2
+                               ,refresh =1
+                               ,max_treedepth=20
+                               ,adapt_delta =0.99
+                               #,inits = "0"
+                               #,thin =1
+                               ,prior = priors_xy
+) 
+
+stancode_mu_X # type out the stancode for bug checking before we try to run it
+
+```
+ok. now try to compile.
+
+```{r eval=FALSE, include=FALSE}
+options("cmdstanr_verbose"=FALSE)
+
+BRMS_xy =brm(formula
+                ,family = gumbeltree_xy # needed if you want to do something else with the data as well as the tree
+                ,stanvars = stanvars_gumbeltree_xy
+                ,data = X %>% select(y)%>%mutate(row=1:n())
+                ,backend = "cmdstanr"
+                ,threads = threading(20)
+                ,cores =20
+                ,iter = 50
+                ,warmup = 20
+                ,chains = 4
+                ,refresh =10
+                ,max_treedepth=10
+                ,adapt_delta =0.90
+                ,save_pars = save_pars(all=TRUE)# potentially add this so that we can get access to the other parameters added via stanvars
+                #,inits = "0"
+                #,thin =1
+                ,prior = priors_xy
+) 
+
+
+
+save(BRMS_xy, file = "BRMS_xy.RData")
+```
+
+now see if we get the same results
+```{r}
+library(tidybayes)
+
+load("BRMS_xy.RData")
+model = BRMS_xy
+L = model$stanvars$L_T$sdata
+K = model$stanvars$K_T$sdata
+N = max(model$data$row)
+NL=2^L
+NW=NL-1
+draws = nsamples(model)
+P = base::array((model%>%spread_draws(P[NW,K])%>%rename(draw=.draw)%>%arrange(draw,K,NW))$P, dim = c(NW,K,draws))
+G = base::array((model%>%spread_draws(G[NW,K])%>%rename(draw=.draw)%>%arrange(draw,K,NW))$G, dim = c(NW,K,draws))
+C = base::array((model%>%spread_draws(C[NW])%>%rename(draw=.draw)%>%arrange(draw,NW))$C, dim = c(NW,draws))
+mu = base::array((model%>%spread_draws(mu_T[NL])%>%rename(draw=.draw)%>%arrange(draw,NL))$mu_T, dim = c(NL,draws))
+
+Temp = model$stanvars$T_T$sdata
+
+# test it out
+residual_test = mu_X_calc( as.matrix(X%>%select(-y))
+          ,  matrix(P[,,1], nrow = NW)
+          ,  matrix(G[,,1], nrow = NW)
+          ,  as.vector(C[,1])
+          ,  as.vector(mu[,1])
+          ,  K
+          ,  L
+          ,  NW
+          ,  NL
+          ,  N
+          ,  Temp
+          )
+str(residual_test)
+
+```
+
+
+```{r}
+mu_X = array(dim = c(N,draws))
+H = array(dim = c(NW,K,draws))
+for(i in 1:draws){
+  mu_X[,i] = mu_X_calc( as.matrix(X%>%select(-y))
+          ,  matrix(P[,,i], nrow = NW)
+          ,  matrix(G[,,i], nrow = NW)
+          ,  as.vector(C[,i])
+          ,  as.vector(mu[,i])
+          ,  K
+          ,  L
+          ,  NW
+          ,  NL
+          ,  N
+          ,  Temp
+          )
+  H[,,i]  = H_calc(matrix(G[,,i], nrow = NW)
+               ,matrix(P[,,i], nrow = NW)
+               ,NW,K,Temp)
+}
+
+```
+
+```{r}
+#some plots
+library(plotly)
+
+quantiles = array(dim = c(N,3))
+
+for (i in 1:N){
+  quantiles[i,] = quantile(mu_X[i,], probs = c(0.01,0.5,0.99))
+}
+X_plot = X%>%mutate(p01 = quantiles[,1],p50 = quantiles[,2],p99 = quantiles[,3])
+X_plot%>%plot_ly(x=~x2, y=~x3, z=~y, type = "mesh3d", name = "Actual" )%>%
+add_trace(x=~x2, y=~x3, z=~p01, type = "mesh3d", opacity=0.5, name = "fitted at 1%")%>%
+add_trace(x=~x2, y=~x3, z=~p99, type = "mesh3d", opacity=0.5, name = "fitted at 99%") %>% layout(showlegend = TRUE
+                                                                                                 ,legend = list(x = 0.1, y = 0.9, z = 0.9)
+                                                                                                 ,title = "Actual vs Fitted")
+  
+
+```
+
+Yey! Working first go. This is essentially a random forest approach as we are averaging together a bunch of trees. HMC is sampling trees that are a better fit more often, just like a bagging process might try to emulate.
+
+NOw we can use a few of the functionalities of BRMS. Starting with fit statistics using LOOIC.
+
+```{r}
+loo(BRMS_xy)
+
+
+```
+
+So we need the loglikelihood function first. See https://cran.r-project.org/web/packages/brms/vignettes/brms_customfamilies.html for some details
+
+```{r}
+
+
+# extract 
+sigma = base::array((model%>%spread_draws(Intercept)%>%rename(draw=.draw)%>%arrange(draw,NL))$Intercept, dim = c(1,draws))
+
+log_lik_gumbeltree_xy <- function(i, prep) {
+  sigma <- prep$dpars$mu
+  X_base <- prep$data$X_base
+  vint1 <- prep$data$vint1
+  N <- prep$nobs
+  P <- prep$dpars$P
+  G <- prep$dpars$G
+  C <- prep$dpars$C
+  mu <- prep$dpars$mu_T
+  K <- prep$data$K_T
+  L <- prep$data$L_T
+  
+  print(str(prep))
+  Temp <- prep$data$T_T
+  
+  y <- prep$data$Y[i]
+  NL=2^L;
+  NW=NL-1;
+  X_T = matrix(0,nrow = N, ncol = K)
+  
+  for (i in 1:N){
+    X_T[i] = X_base[vint1[i]]# reordering X_base to match any reordering performed on y. BRMS pre-processing of y generally reorders the input data.
+  }
+  
+  mu_X = mu_X_calc( X_T
+          ,  P
+          ,  G
+          ,  C
+          ,  mu
+          ,  K
+          ,  L
+          ,  NW
+          ,  NL
+          ,  N
+          ,  Temp
+          )
+  dnorm(y,mu_X[i],sigma)
+}
+
+```
+
+Looks like it can't be done because the additional parameters defined through stanvars are not passed to the loglikelihood function. We need to include X for prediction purposes
+
+### Adding Leave One Out Crossvalidation to BRMS
+Looking at the loo package. I can see that we need to add generated quantities. Best way to do this is share the calculation of the expected value of y given the tree and each set of features X[i]. 
+
+I have decided to bite the bullet and try to do this with the map_rect function in stan which is a different function for parallel calculation. This way we calculate the expected set of y's once and use it for both the loglikelihood calculation of the model and to store the loglikelihood for each X[i].
+
+
+```{r}
+
+library(brms)
+gumbeltree_xy <- custom_family(
+  "gumbeltree_xy", dpars = c("mu"), # actually mu is really the sigma for the tree, but the first parameter has to be called mu,  
+                                  # and this is the only parameter that BRMS will be handling
+  links = c("log"),# sigma needs a log link function to stay positive
+
+  type = "real",
+  vars = c("log_lik[n]") # estimates mean for a given X[i] is passed to the function
+  #vars = c("grainsize_T")
+)
+library(brms)
+
+# rewrite the code such that the mu_T is calculated in the transformed parameters section getting rid of H
+
+stan_funs_gumbeltree_xy <- "
+
+vector lp_reduce( vector beta , vector theta , real[] xr , int[] xi ) {
+
+  // we use this version of the function when calculating mu_T in transformed parameters so
+  // that we don't have to declare all the additional variables in trf param section as well
+  int K = xi[1];
+  int L = xi[2];
+  int NW = xi[3];
+  int NL = xi[4];
+  int Base_N = xi[5];
+  int N = xi[6];
+  matrix[N,K] X = to_matrix(xr[1:(N*K)],N,K);
+  vector[N] Y = to_vector(xr[(N*K+1):(N*K+N)]);
+  matrix[NW,K] H = to_matrix(beta[1:(NW*K)],NW,K);
+  vector[NW] C = to_vector(beta[(NW*K+1):(NW*K+NW)]);
+  vector[NL] mu = to_vector(beta[(NW*K+NW+1):(NW*K+NW+NL)]);
+  real sigma = beta[NW*K+NW+NL+1];
+
+  matrix[NW,N] w; //calculation of the weight for each node for each sample
+  matrix[NL,N] temp; //temporary store of tree calculations
+                      // after processing, the first row of temp becomes
+                      //the estimation of Y given X i.e. y^=F(X)
+  int c;// local integer parameter
+  int c2;// local integer parameter
+
+  // this is effectively (approximately) choosing which branch of the tree to traverse, based on a cutoff applied to a selected feature
+  w=inv_logit(10*((H*X')+rep_matrix(C,N)));
+
+  // start at the bottom of the tree and work upwards
+  // at the end of the loop temp[1] is the result of applying the tree to X[i]
+  temp = rep_matrix(mu,N) ;
+  
+  for (j in 1:L){
+    c2=1;
+    c=1+L-j; // need c to be the lowest level of the tree working upwards
+    for (l in 1:c){
+        c2 = c2*2;// can only make integer c2 = 2^C inside a loop
+    }
+    
+    for (k in 1:c2/2){
+        temp[k]=w[k+NW-c2+1] .* temp[2*k-1] + (1-w[k+NW-c2+1]) .* temp[2*k]; // cycling through the tree and calculating which leaf is retained based on w
+    }
+  }
+  for (n in 1:N) {
+    
+    temp[1,n] = normal_lpdf(Y[n] | temp[1,n], sigma);
+    
+  }
+  return temp[1]';// this is mu_X, the estimate of Y given the tree 
+}
+
+
+
+real gumbeltree_xy_lpdf(real y, real sigma, real log_lik){
+  return log_lik;// loglikelihood already calculated in map_rect/lp_reduce function
+}
+
+"
+stanvars_trf_data = " 
+  int M = N/nshards;// number of samples of data in each shard
+  int xi[nshards, 6];  // integer data to pass through
+  real xr[nshards, M*K_T+M];// the block of X for each shard and the matching Y's
+  vector[0] theta[nshards];// empty set of shard specific parameters
+
+  NL=1;
+  for (i in 1:L_T){
+    NL = NL*2;// can only make integer 2^L inside a loop
+  }
+  NW=NL-1;
+  for (i in 1:N){
+    X_T[i] = X_base[vint1[i]];// reordering X_base to match any reordering performed on y. BRMS pre-processing of y generally reorders the input data.
+  }
+
+
+  // split into shards
+  for ( i in 1:nshards ) {
+    int j = 1 + (i-1)*M;
+    int k = i*M;
+    xr[i] = to_array_1d(append_row(to_vector(X_T[j:k]),Y[j:k]));
+    xi[i,1] = K_T;
+    xi[i,2] = L_T;
+    xi[i,3] = NW;
+    xi[i,4] = NL;
+    xi[i,5] = N;
+    xi[i,6] = M;
+  }
+"
+
+ 
+ stanvars_tpar = "
+ 
+   for (j in 1:NW){
+      H[j] = softmax( (log(P[j])*(T_T^2 + T_T +1) / (T_T+1) + G[j])/T_T)' ;
+      // selects a parameter using the approximate one-hot dot producted against a specific X[i], adds a cutoff constant and applies a logistic to return (~0,~1). In model section for computational efficiency
+   }
+ 
+ log_lik = map_rect( lp_reduce , append_row(append_row(append_row(to_vector(H),C),mu_T),exp(Intercept)) , theta , xr , xi ); // the expected value of y[i] for X[i]
+ 
+ "
+ 
+
+# we will use the suffix _T to denote parameters for the tree function to avoid accidentally conflicting a parameter with BRMS
+# we are essentially shoehorning our own code into BRMS by force, rendering the main part of the model irrelevant at this stage.
+# At a later stage, we can envisage BRMS code running a different model as well. e.g a GLM with the tree function providing estimates of the missing variables
+stanvars_gumbeltree_xy <- stanvar(scode = stan_funs_gumbeltree_xy, block = "functions")+
+                           stanvar(#pll_args = "int NL"
+                                    name = "NL"
+                                   ,scode = "int NL;// # leaves"
+                                   ,  block = "tdata")+
+                           stanvar(#pll_args = "int NW"
+                                    name = "NW"
+                                   ,scode = "int NW;// # splits"
+                                   ,  block = "tdata")+
+                           stanvar(#pll_args = "matrix X_T"
+                                    name = "X_T"
+                                   ,scode = "matrix[N,K_T] X_T;// reorder X_base to match y using vint1"
+                                   ,  block = "tdata")+# this passes the re-ordered design matrix so that rows match with y (as y has likely been reordered)
+                           stanvar(scode = stanvars_trf_data
+                                   , block = "tdata")+
+                           stanvar(scode = "vector[NW] C; // cutoff level for the feature chosen at each node"
+                                   , name = "C"
+                                   #, pll_args = "vector C"
+                                   ,block = "parameters")+
+                           stanvar(scode = "  vector[NL] mu_T;// mean of Y at each leaf"
+                                   , name = "mu_T"
+                                   #, pll_args = "vector mu_T"
+                                   , block = "parameters")+
+                           stanvar(scode = "  vector[K_T] G[NW];//number of gumbel samples needed to select a feature at each node"
+                                   , name = "G"
+                                   , block = "parameters")+
+                           stanvar(scode = "simplex[K_T] P[NW];//probability vector indicating the probability of selecting each feature at each node, each group adds to 1 i.e. simplex"
+                                   , name = "P"
+                                   , block = "parameters")+
+                           stanvar(scode = "vector[N] log_lik; // pointwise log-likelihood for LOO" 
+                                   , name = "log_lik"
+                                   , pll_args = "vector log_lik"
+                                   ,block = "tparameters")+
+                           stanvar(scode = "matrix[NW,K_T] H; // one hot to select a feature at each node"
+                                   #, pll_args = "matrix H"
+                                   , name = "H"
+                                   , block = "tparameters")+
+                           stanvar(scode = stanvars_tpar
+                                   , block = "tparameters")+
+                           stanvar(as.integer(length(X[1,])-1)
+                                   , name = "K_T"
+                                   ,scode = "  int K_T;")+ # number of features in X_T
+                           stanvar(as.matrix(X%>%select(-y))
+                                   , name = "X_base"
+                                   ,scode = "  matrix[N,K_T] X_base;")+# here we add the design matrix X directly to the model
+                           stanvar(as.integer(4)
+                                   , name = "L_T"
+                                   ,scode = "  int L_T;")+ # number of levels in the tree
+                           stanvar(1
+                                   , name = "T_T"
+                                   ,scode = "  real T_T;")+ # temperature of the softmax
+                           stanvar(0.2
+                                   , name = "alpha_T"
+                                   ,scode = "  real alpha_T;")+ # alpha parameter fo the dirichlet prior for P
+                           stanvar(20
+                                   , name = "nshards"
+                                   ,scode = "  int nshards;")# map_rect function # slices of the data to parallelise
+   
+   
+ # we use the priors function with check = false to push our additional priors and main LL function into the stancode.
+ priors_xy = c(prior(" for (i in 1:NW){G[i] ~ gumbel(0,1);} // each vector of gumbels used to create a one-hot", check = FALSE)
+           ,prior("C~normal(0,1); //features in the design matrix are normalised so the cutoffs should be normalised I suggest", check = FALSE)
+           ,prior("for (i in 1:NW){ to_vector(P[i]) ~ dirichlet(rep_vector(alpha_T,K_T));}//P also needs a prior and should have a U shaped dirichlet", check = FALSE)
+           )
+# 
+
+
+
+```
+
+write out the new code
+
+```{r echo=TRUE}
+
+
+ stancode_xy =make_stancode(y|vint(row)  ~  1
+                               ,family = gumbeltree_xy # needed if you want to do something else with the data as well as the tree
+                               ,stanvars = stanvars_gumbeltree_xy
+                               ,data = X %>% mutate(row=1:n())
+                               #,backend = "cmdstanr"
+                               ,threads = threading(20)
+                               ,iter = 20
+                               ,warmup = 10
+                               ,chains = 2
+                               ,refresh =1
+                               ,max_treedepth=20
+                               ,adapt_delta =0.99
+                               #,inits = "0"
+                               #,thin =1
+                               ,prior = priors_xy
+) 
+
+stancode_xy # type out the stancode for bug checking before we try to run it
+
+```
+ok. now try to compile.
+
+```{r eval=FALSE, include=FALSE}
+options("cmdstanr_verbose"=FALSE)
+
+BRMS_xy =brm(y |vint(row)~1
+                ,family = gumbeltree_xy # needed if you want to do something else with the data as well as the tree
+                ,stanvars = stanvars_gumbeltree_xy
+                ,data = X %>% select(y)%>%mutate(row=1:n())
+                ,backend = "cmdstanr"
+                ,threads = threading(20)
+                ,cores =20
+                ,iter = 200
+                ,warmup = 150
+                ,chains = 4
+                ,refresh =10
+                ,max_treedepth=20
+                ,adapt_delta =0.99
+                ,save_pars = save_pars(all=TRUE)# potentially add this so that we can get access to the other parameters added via stanvars
+                #,inits = "0"
+                #,thin =1
+                ,prior = priors_xy
+) 
+
+
+
+save(BRMS_xy, file = "BRMS_xy.RData")
+```
+
+now see if we get the same results
+```{r}
+library(tidybayes)
+
+load("BRMS_xy.RData")
+model = BRMS_xy
+L = model$stanvars$L_T$sdata
+K = model$stanvars$K_T$sdata
+N = max(model$data$row)
+NL=2^L
+NW=NL-1
+draws = nsamples(model)
+P = base::array((model%>%spread_draws(P[NW,K])%>%rename(draw=.draw)%>%arrange(draw,K,NW))$P, dim = c(NW,K,draws))
+G = base::array((model%>%spread_draws(G[NW,K])%>%rename(draw=.draw)%>%arrange(draw,K,NW))$G, dim = c(NW,K,draws))
+C = base::array((model%>%spread_draws(C[NW])%>%rename(draw=.draw)%>%arrange(draw,NW))$C, dim = c(NW,draws))
+mu = base::array((model%>%spread_draws(mu_T[NL])%>%rename(draw=.draw)%>%arrange(draw,NL))$mu_T, dim = c(NL,draws))
+
+Temp = model$stanvars$T_T$sdata
+
+# test it out
+residual_test = mu_X_calc( as.matrix(X%>%select(-y))
+          ,  matrix(P[,,1], nrow = NW)
+          ,  matrix(G[,,1], nrow = NW)
+          ,  as.vector(C[,1])
+          ,  as.vector(mu[,1])
+          ,  K
+          ,  L
+          ,  NW
+          ,  NL
+          ,  N
+          ,  Temp
+          )
+str(residual_test)
+
+```
+
+
+```{r}
+mu_X = array(dim = c(N,draws))
+H = array(dim = c(NW,K,draws))
+for(i in 1:draws){
+  mu_X[,i] = mu_X_calc( as.matrix(X%>%select(-y))
+          ,  matrix(P[,,i], nrow = NW)
+          ,  matrix(G[,,i], nrow = NW)
+          ,  as.vector(C[,i])
+          ,  as.vector(mu[,i])
+          ,  K
+          ,  L
+          ,  NW
+          ,  NL
+          ,  N
+          ,  Temp
+          )
+  H[,,i]  = H_calc(matrix(G[,,i], nrow = NW)
+               ,matrix(P[,,i], nrow = NW)
+               ,NW,K,Temp)
+}
+
+```
+
+```{r}
+#some plots
+library(plotly)
+
+quantiles = array(dim = c(N,3))
+
+for (i in 1:N){
+  quantiles[i,] = quantile(mu_X[i,], probs = c(0.01,0.5,0.99))
+}
+X_plot = X%>%mutate(p01 = quantiles[,1],p50 = quantiles[,2],p99 = quantiles[,3])
+X_plot%>%plot_ly(x=~x2, y=~x3, z=~y, type = "mesh3d", name = "Actual" )%>%
+add_trace(x=~x2, y=~x3, z=~p01, type = "mesh3d", opacity=0.5, name = "fitted at 1%")%>%
+add_trace(x=~x2, y=~x3, z=~p99, type = "mesh3d", opacity=0.5, name = "fitted at 99%") %>% layout(showlegend = TRUE
+                                                                                                 ,legend = list(x = 0.1, y = 0.9, z = 0.9)
+                                                                                                 ,title = "Actual vs Fitted")
+  
+
+```
+
+Now we try to perform a loocv calculation
+
+```{r}
+
+library(loo)
+
+log_lik = base::array((model%>%spread_draws(log_lik[i])%>%arrange(.iteration,.chain,i))$log_lik, dim = c(50,4,N))
+
+rel_n_eff <- relative_eff(exp(log_lik))
+loo(log_lik, r_eff = rel_n_eff, cores = 20)
+
+```
+OK, it works but it is slow. Lets see if I can speed it up by removing the need for Y to be passed to brms i.e. I bypass the BRMS implementation of the loglikelihood.
+
+```{r}
+
+library(brms)
+
+
+# rewrite the code such that the mu_T is calculated in the transformed parameters section getting rid of H
+
+stan_funs_gumbeltree_loo <- "
+
+real partial_sum(real[,] xy_slice,
+                   int start,
+                   int end,
+                   matrix H,
+                   vector C,
+                   vector mu,
+                   real sigma,
+                   int K,
+                   int L,
+                   int NW,
+                   int NL,
+                   real T) {
+
+  real y[end-start+1] = to_array_1d(xy_slice[,1]);
+  matrix[end-start+1 , K] X = to_matrix(xy_slice[,2:(K+1)]);
+  matrix[NW,end-start+1] w; //calculation of the weight for each node for each sample
+  matrix[NL,end-start+1] temp; //temporary store of tree calculations
+                      // after processing, the first row of temp becomes
+                      //the estimation of Y given X i.e. y^=F(X)
+  int c;// local integer parameter
+  int c2;// local integer parameter
+
+  // this is effectively (approximately) choosing which branch of the tree to traverse, based on a cutoff applied to a selected feature
+  w=inv_logit(10*((H*X')+rep_matrix(C,end-start+1)));
+
+  // start at the bottom of the tree and work upwards
+  // at the end of the loop temp[1] is the result of applying the tree to X[i]
+  temp = rep_matrix(mu,end-start+1) ;
+  for (j in 1:L){
+    c2=1;
+    c=1+L-j; // need c to be the lowest level of the tree working upwards
+    for (l in 1:c){
+        c2 = c2*2;// can only make integer c2 = 2^C inside a loop
+    }
+    
+    for (k in 1:c2/2){
+        temp[k]=w[k+NW-c2+1] .* temp[2*k-1] + (1-w[k+NW-c2+1]) .* temp[2*k]; // cycling through the tree and calculating which leaf is retained based on w
+    }
+  }
+
+    return normal_lpdf(y | temp[1]', sigma);// assuming that y is a function that ranges (-inf,+inf)
+  }
+
+vector lp_reduce( vector beta , vector theta , real[] xr , int[] xi ) {
+
+  // we use this version of the function when calculating mu_T in transformed parameters so
+  // that we don't have to declare all the additional variables in trf param section as well
+  int K = xi[1];
+  int L = xi[2];
+  int NW = xi[3];
+  int NL = xi[4];
+  int Base_N = xi[5];
+  int N = xi[6];
+  matrix[N,K] X = to_matrix(xr[1:(N*K)],N,K);
+  vector[N] Y = to_vector(xr[(N*K+1):(N*K+N)]);
+  matrix[NW,K] H = to_matrix(beta[1:(NW*K)],NW,K);
+  vector[NW] C = to_vector(beta[(NW*K+1):(NW*K+NW)]);
+  vector[NL] mu = to_vector(beta[(NW*K+NW+1):(NW*K+NW+NL)]);
+  real sigma = beta[NW*K+NW+NL+1];
+
+  matrix[NW,N] w; //calculation of the weight for each node for each sample
+  matrix[NL,N] temp; //temporary store of tree calculations
+                      // after processing, the first row of temp becomes
+                      //the estimation of Y given X i.e. y^=F(X)
+  int c;// local integer parameter
+  int c2;// local integer parameter
+
+  // this is effectively (approximately) choosing which branch of the tree to traverse, based on a cutoff applied to a selected feature
+  w=inv_logit(10*((H*X')+rep_matrix(C,N)));
+
+  // start at the bottom of the tree and work upwards
+  // at the end of the loop temp[1] is the result of applying the tree to X[i]
+  temp = rep_matrix(mu,N) ;
+  
+  for (j in 1:L){
+    c2=1;
+    c=1+L-j; // need c to be the lowest level of the tree working upwards
+    for (l in 1:c){
+        c2 = c2*2;// can only make integer c2 = 2^C inside a loop
+    }
+    
+    for (k in 1:c2/2){
+        temp[k]=w[k+NW-c2+1] .* temp[2*k-1] + (1-w[k+NW-c2+1]) .* temp[2*k]; // cycling through the tree and calculating which leaf is retained based on w
+    }
+  }
+  for (n in 1:N) {
+    
+    temp[1,n] = normal_lpdf(Y[n] | temp[1,n], sigma);
+    
+  }
+  return temp[1]';// this is mu_X, the estimate of Y given the tree 
+}
+
+
+
+real gumbeltree_xy_lpdf(real y, real sigma, real log_lik){
+  return log_lik;// loglikelihood already calculated in map_rect/lp_reduce function
+}
+
+"
+stanvars_trf_data = " 
+  int M = N_T/nshards;// number of samples of data in each shard
+  int xi[nshards, 6];  // integer data to pass through
+  real xr[nshards, M*K_T+M];// the block of X for each shard and the matching Y's
+  vector[0] theta[nshards];// empty set of shard specific parameters
+
+  NL=1;
+  for (i in 1:L_T){
+    NL = NL*2;// can only make integer 2^L inside a loop
+  }
+  NW=NL-1;
+  
+  // split into shards
+  for ( i in 1:nshards ) {
+    int j = 1 + (i-1)*M;
+    int k = i*M;
+    xr[i] = to_array_1d(append_row(to_vector(X_T[j:k]),Y_T[j:k]));
+    xi[i,1] = K_T;
+    xi[i,2] = L_T;
+    xi[i,3] = NW;
+    xi[i,4] = NL;
+    xi[i,5] = N;
+    xi[i,6] = M;
+  }
+"
+
+ 
+ stanvars_tpar = "
+ 
+   for (j in 1:NW){
+      H[j] = softmax( (log(P[j])*(T_T^2 + T_T +1) / (T_T+1) + G[j])/T_T)' ;
+      // selects a parameter using the approximate one-hot dot producted against a specific X[i], adds a cutoff constant and applies a logistic to return (~0,~1). In model section for computational efficiency
+   }
+ 
+ 
+ "
+ stanvars_gen = "
+ vector[N] log_lik;
+ 
+ log_lik = map_rect( lp_reduce , append_row(append_row(append_row(to_vector(H),C),mu_T),sigma_T) , theta , xr , xi ); 
+ 
+ 
+ "
+
+# we will use the suffix _T to denote parameters for the tree function to avoid accidentally conflicting a parameter with BRMS
+# we are essentially shoehorning our own code into BRMS by force, rendering the main part of the model irrelevant at this stage.
+# At a later stage, we can envisage BRMS code running a different model as well. e.g a GLM with the tree function providing estimates of the missing variables
+stanvars_gumbeltree_loo <- stanvar(scode = stan_funs_gumbeltree_loo, block = "functions")+
+                           stanvar(#pll_args = "int NL"
+                                    name = "NL"
+                                   ,scode = "int NL;// # leaves"
+                                   ,  block = "tdata")+
+                           stanvar(#pll_args = "int NW"
+                                    name = "NW"
+                                   ,scode = "int NW;// # splits"
+                                   ,  block = "tdata")+
+                           stanvar(scode = stanvars_trf_data
+                                   , block = "tdata")+
+                           stanvar(scode = "vector[NW] C; // cutoff level for the feature chosen at each node"
+                                   , name = "C"
+                                   #, pll_args = "vector C"
+                                   ,block = "parameters")+
+                           stanvar(scode = "  vector[NL] mu_T;// mean of Y at each leaf"
+                                   , name = "mu_T"
+                                   #, pll_args = "vector mu_T"
+                                   , block = "parameters")+
+                           stanvar(scode = "  real<lower=0> sigma_T;// expected error between y[i] and mu_T"
+                                   , name = "sigma_T"
+                                   , block = "parameters")+
+                           stanvar(scode = "  vector[K_T] G[NW];//number of gumbel samples needed to select a feature at each node"
+                                   , name = "G"
+                                   , block = "parameters")+
+                           stanvar(scode = "simplex[K_T] P[NW];//probability vector indicating the probability of selecting each feature at each node, each group adds to 1 i.e. simplex"
+                                   , name = "P"
+                                   , block = "parameters")+
+                           stanvar(scode = "matrix[NW,K_T] H; // one hot to select a feature at each node"
+                                   #, pll_args = "matrix H"
+                                   , name = "H"
+                                   , block = "tparameters")+
+                           stanvar(scode = stanvars_tpar
+                                   , block = "tparameters")+
+                           stanvar(scode = stanvars_gen
+                                   , block = "genquant")+
+                           stanvar(as.integer(length(X[1,])-1)
+                                   , name = "K_T"
+                                   ,scode = "  int K_T;")+ # number of features in X_T
+                           stanvar(1000
+                                   , name = "N_T"
+                                   ,scode = "  int N_T;")+
+                           stanvar(as.matrix(X%>%select(-y))
+                                   , name = "X_T"
+                                   ,scode = "  matrix[N_T,K_T] X_T;")+# here we add the design matrix X directly to the model
+                           stanvar(X$y
+                                   , name = "Y_T"
+                                   ,scode = " vector[N_T] Y_T;")+
+                           stanvar(as.integer(4)
+                                   , name = "L_T"
+                                   ,scode = "  int L_T;")+ # number of levels in the tree
+                           stanvar(1
+                                   , name = "T_T"
+                                   ,scode = "  real T_T;")+ # temperature of the softmax
+                           stanvar(0.2
+                                   , name = "alpha_T"
+                                   ,scode = "  real alpha_T;")+ # alpha parameter fo the dirichlet prior for P
+                           stanvar(20
+                                   , name = "nshards"
+                                   ,scode = "  int nshards;")# map_rect function # slices of the data to parallelise
+                           
+  
+ # we use the priors function with check = false to push our additional priors and main LL function into the stancode.
+ priors_loo = c(prior(" for (i in 1:NW){G[i] ~ gumbel(0,1);} // each vector of gumbels used to create a one-hot", check = FALSE)
+           ,prior("C~normal(0,1); //features in the design matrix are normalised so the cutoffs should be normalised I suggest", check = FALSE)
+           ,prior("target += reduce_sum(partial_sum, to_array_2d( append_col(Y_T,X_T)), nshards,H,C, mu_T, sigma_T,K_T,L_T,NW,NL,T_T); // the main LogLikelihood calculation, parallelised via reduce_sum", check = FALSE)# here we add the main log likelihood to bypass brms
+           )
+
+
+
+```
+
+write out the new code
+
+```{r echo=TRUE}
+
+
+ stancode_loo =make_stancode(y  ~  1
+                               ,stanvars = stanvars_gumbeltree_loo
+                               ,data = data.frame(y=1)
+                               #,backend = "cmdstanr"
+                               ,threads = threading(20)
+                               ,iter = 20
+                               ,warmup = 10
+                               ,chains = 2
+                               ,refresh =1
+                               ,max_treedepth=20
+                               ,adapt_delta =0.99
+                               #,inits = "0"
+                               #,thin =1
+                               ,prior = priors_loo
+) 
+
+stancode_loo # type out the stancode for bug checking before we try to run it
+
+```
+ok. now try to compile.
+
+```{r eval=FALSE, include=FALSE}
+options("cmdstanr_verbose"=FALSE)
+
+BRMS_loo =brm(y ~1
+                ,stanvars = stanvars_gumbeltree_loo
+                ,data = data.frame(y=1)
+                ,sample_prior="only"# ignore the brms model entirely
+                ,backend = "cmdstanr"
+                ,threads = threading(20)
+                ,cores =20
+                ,iter = 200
+                ,warmup = 150
+                ,chains = 4
+                ,refresh =10
+                ,max_treedepth=20
+                ,adapt_delta =0.95
+                #,inits = "0"
+                #,thin =1
+                ,prior = priors_loo
+) 
+
+
+
+save(BRMS_loo, file = "BRMS_loo.RData")
+```
+
+now see if we get the same results
+```{r}
+library(tidybayes)
+
+load("BRMS_loo.RData")
+model = BRMS_loo
+L = model$stanvars$L_T$sdata
+K = model$stanvars$K_T$sdata
+N =  model$stanvars$N_T$sdata
+NL=2^L
+NW=NL-1
+draws = nsamples(model)
+P = base::array((model%>%spread_draws(P[NW,K])%>%rename(draw=.draw)%>%arrange(draw,K,NW))$P, dim = c(NW,K,draws))
+G = base::array((model%>%spread_draws(G[NW,K])%>%rename(draw=.draw)%>%arrange(draw,K,NW))$G, dim = c(NW,K,draws))
+C = base::array((model%>%spread_draws(C[NW])%>%rename(draw=.draw)%>%arrange(draw,NW))$C, dim = c(NW,draws))
+mu = base::array((model%>%spread_draws(mu_T[NL])%>%rename(draw=.draw)%>%arrange(draw,NL))$mu_T, dim = c(NL,draws))
+
+Temp = model$stanvars$T_T$sdata
+
+# test it out
+residual_test = mu_X_calc( as.matrix(X%>%select(-y))
+          ,  matrix(P[,,1], nrow = NW)
+          ,  matrix(G[,,1], nrow = NW)
+          ,  as.vector(C[,1])
+          ,  as.vector(mu[,1])
+          ,  K
+          ,  L
+          ,  NW
+          ,  NL
+          ,  N
+          ,  Temp
+          )
+str(residual_test)
+
+```
+
+
+```{r}
+mu_X = array(dim = c(N,draws))
+H = array(dim = c(NW,K,draws))
+for(i in 1:draws){
+  mu_X[,i] = mu_X_calc( as.matrix(X%>%select(-y))
+          ,  matrix(P[,,i], nrow = NW)
+          ,  matrix(G[,,i], nrow = NW)
+          ,  as.vector(C[,i])
+          ,  as.vector(mu[,i])
+          ,  K
+          ,  L
+          ,  NW
+          ,  NL
+          ,  N
+          ,  Temp
+          )
+  H[,,i]  = H_calc(matrix(G[,,i], nrow = NW)
+               ,matrix(P[,,i], nrow = NW)
+               ,NW,K,Temp)
+}
+
+```
+
+```{r}
+#some plots
+library(plotly)
+
+quantiles = array(dim = c(N,3))
+
+for (i in 1:N){
+  quantiles[i,] = quantile(mu_X[i,], probs = c(0.01,0.5,0.99))
+}
+X_plot = X%>%mutate(p01 = quantiles[,1],p50 = quantiles[,2],p99 = quantiles[,3])
+X_plot%>%plot_ly(x=~x2, y=~x3, z=~y, type = "mesh3d", name = "Actual" )%>%
+add_trace(x=~x2, y=~x3, z=~p01, type = "mesh3d", opacity=0.5, name = "fitted at 1%")%>%
+add_trace(x=~x2, y=~x3, z=~p99, type = "mesh3d", opacity=0.5, name = "fitted at 99%") %>% layout(showlegend = TRUE
+                                                                                                 ,legend = list(x = 0.1, y = 0.9, z = 0.9)
+                                                                                                 ,title = "Actual vs Fitted")
+  
+
+```
+
+
+Now we try to perform a loocv calculation
+
+```{r}
+
+library(loo)
+
+log_lik = base::array((model%>%spread_draws(log_lik[i])%>%arrange(.iteration,.chain,i))$log_lik, dim = c(50,4,N))
+
+rel_n_eff <- relative_eff(exp(log_lik))
+loo(log_lik, r_eff = rel_n_eff, cores = 20)
+
+```
+Yey! Loo is working well.
+
+We can now move on to boosting model.
+
