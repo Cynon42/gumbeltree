@@ -48,6 +48,17 @@ fit <- mod$sample(
 )
 ```
 
+I also modified my .cmdstanr\cmdstan-2.26.0\make\local file to contain:
+
+PRECOMPILED_HEADERS=false
+STAN_THREADS=true
+STAN_OPENCL=true
+OPENCL_DEVICE_ID=0
+OPENCL_PLATFORM_ID=0
+CC = g++
+LDFLAGS_OPENCL= -L"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.1\lib\x64" -lOpenCL
+                                                    
+
 Now get cmdstan code chunks working.
 
 ```{r}

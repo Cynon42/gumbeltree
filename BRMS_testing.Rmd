@@ -3992,5 +3992,11 @@ loo(log_lik, r_eff = rel_n_eff, cores = 20)
 ```
 Yey! Loo is working well.
 
-We can now move on to boosting model.
+We can now move on to boosting model, but we will define the basic stan model now as well, fo rthose that don't need or want the hassle of working with BRMS
+
+```{r}
+
+temp = make_stancode(y~to_vector(x1,x2)
+              ,data=data.frame(y=c(1,2,3,4),x1=c(1,2,3,4),x2=c(1,2,3,4)))
+```
 
