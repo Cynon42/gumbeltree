@@ -70,7 +70,7 @@ register_knitr_engine()
 ```
 
 
-```{stan output.var="gumbeltree"}
+
 ```{stan output.var="gumbeltree", eval = FALSE}
 
 // This stan chunk results in a CmdStanModel object called "gumbeltree"
