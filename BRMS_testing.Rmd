@@ -43,8 +43,19 @@ gumbeltree <- custom_family(
   links = c("log"),
 
   type = "real",
-  vars = c("y_T","X_T","H_T","C_T","mu_T","K_T","L_T","NW_T","NL_T","T_T","grainsize_T") # the additional parameters to run the tree
-  #vars = c("grainsize_T")
+  vars = c("y_T" # samples that you are trying to fit
+           ,"X_T" # normalised design matrix of features
+           ,"H_T" # matrix of approximate one hots that select which feature to split on at each node
+           ,"C_T" # the cutoff level for the feature used at each node
+           ,"mu_T" # the fitted level at each leaf
+           ,"K_T" # the fitted level at each leaf
+           ,"L_T"
+           ,"NW_T" # the number of nodes in the tree
+           ,"NL_T" # the number of leaves on the tree
+           ,"T_T" # the temperature hyper-parameter which is essentially the base of the exponentiation in the softmax function
+           ,"grainsize_T" # how many rows of data to process for each parallel processor
+           ) # the additional parameters to run the tree
+  #vars = c("grainsize_T") # grainsize can be a parameter that is given to the model
 )
 
 stan_funs_gumbeltree <- "
